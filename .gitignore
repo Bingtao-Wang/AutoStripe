@@ -1,4 +1,6 @@
+# ==========================================
 # Python
+# ==========================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,42 +9,160 @@ __pycache__/
 env/
 venv/
 ENV/
+.venv/
 *.egg-info/
 dist/
 build/
+*.egg
 
+# ==========================================
 # Jupyter Notebook
+# ==========================================
 .ipynb_checkpoints
+*.ipynb_checkpoints/
 
+# ==========================================
 # IDEs
+# ==========================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.project
+.pydevproject
+.settings/
 
-# Data
+# ==========================================
+# Large Data Files (Images, Videos, Point Clouds)
+# ==========================================
+# Image files
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tiff
+*.tif
+*.gif
+*.webp
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.wmv
+*.webm
+
+# Point cloud files
+*.pcd
+*.ply
+*.las
+*.laz
+*.bin
+
+# Depth maps
+*.exr
+*.hdr
+*.pfm
+
+# Numpy arrays
+*.npy
+*.npz
+
+# HDF5 files
+*.h5
+*.hdf5
+
+# ==========================================
+# Datasets (Keep only .gitkeep)
+# ==========================================
 datasets/carla_highway/*
 !datasets/carla_highway/.gitkeep
 datasets/annotations/*
 !datasets/annotations/.gitkeep
+datasets/*
+!datasets/.gitkeep
+!datasets/carla_highway/
+!datasets/annotations/
 
+# CARLA dataset variations
+CARLA_Town*/
+CARLA_*_Dataset/
+*_dataset/
+*_data/
+
+# ==========================================
 # Models & Checkpoints
+# ==========================================
 *.pth
 *.ckpt
 *.pt
+*.pb
+*.onnx
+*.tflite
+*.h5
 checkpoints/
+weights/
+models/
+pretrained/
+saved_models/
+
+# ==========================================
+# Training Logs & Outputs
+# ==========================================
 logs/
 runs/
-
-# CARLA
-*.rrlog
+outputs/
+results/
+tensorboard/
+wandb/
+mlruns/
 *.log
 
-# OS
+# ==========================================
+# CARLA Specific
+# ==========================================
+*.rrlog
+*.rec
+CarlaUE4/
+Unreal/CarlaUE4/Saved/
+
+# ==========================================
+# OS Files
+# ==========================================
 .DS_Store
 Thumbs.db
+desktop.ini
+*.lnk
 
-# Temporary files
+# ==========================================
+# Temporary & Cache Files
+# ==========================================
 *.tmp
 *.bak
+*.cache
+*.swp
+*~
+.cache/
+temp/
+tmp/
+
+# ==========================================
+# Compressed Archives
+# ==========================================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# ==========================================
+# Configuration (exclude sensitive info)
+# ==========================================
+# Uncomment if you have sensitive configs
+# configs/local_*.yaml
+# .env
+# secrets.yaml
