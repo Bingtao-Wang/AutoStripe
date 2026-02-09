@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!-- Launch RVIZ only (connect to already-running AutoStripe node) -->
+  <!-- Usage: roslaunch autostripe rviz_only.launch -->
+
+  <arg name="rviz_config" default="$(find autostripe)/configs/rviz/autostripe_v2.rviz" />
+
+  <node name="rviz"
+        pkg="rviz"
+        type="rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+</launch>

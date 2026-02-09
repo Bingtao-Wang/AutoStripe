@@ -1,0 +1,86 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/TF
+      Enabled: true
+      Name: TF
+      Show Arrows: false
+      Show Axes: true
+      Show Names: true
+      Update Interval: 0
+      Value: true
+
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /autostripe/perception/edge_markers
+      Name: Road Edges
+      Queue Size: 1
+      Value: true
+
+    - Class: rviz/Path
+      Enabled: true
+      Name: Driving Path
+      Topic: /autostripe/planning/driving_path
+      Color: 85; 170; 255
+      Line Style: Lines
+      Line Width: 0.05
+      Value: true
+
+    - Class: rviz/Path
+      Enabled: true
+      Name: Nozzle Path
+      Topic: /autostripe/planning/nozzle_path
+      Color: 255; 255; 0
+      Line Style: Lines
+      Line Width: 0.05
+      Value: true
+
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /autostripe/control/paint_trail
+      Name: Paint Trail
+      Queue Size: 1
+      Value: true
+
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /autostripe/control/vehicle_marker
+      Name: Vehicle
+      Queue Size: 1
+      Value: true
+
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /autostripe/control/status_text
+      Name: Status Text
+      Queue Size: 1
+      Value: true
+
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /autostripe/perception/edge_overlay
+      Name: Front Perception
+      Queue Size: 1
+      Transport Hint: raw
+      Value: true
+
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /autostripe/perception/road_mask
+      Name: Road Mask
+      Queue Size: 1
+      Transport Hint: raw
+      Value: true
+
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Value: true

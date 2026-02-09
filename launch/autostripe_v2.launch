@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!-- AutoStripe V2 main launch file -->
+  <!-- Usage: roslaunch autostripe autostripe_v2.launch -->
+
+  <!-- Arguments -->
+  <arg name="rviz" default="true" />
+  <arg name="rviz_config" default="$(find autostripe)/configs/rviz/autostripe_v2.rviz" />
+
+  <!-- AutoStripe V2 main node -->
+  <node name="autostripe_v2"
+        pkg="autostripe"
+        type="autostripe_node.py"
+        output="screen"
+        cwd="node"
+        required="true" />
+
+  <!-- RVIZ -->
+  <node if="$(arg rviz)"
+        name="rviz"
+        pkg="rviz"
+        type="rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+</launch>

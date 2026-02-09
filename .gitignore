@@ -128,6 +128,7 @@ mlruns/
 *.rec
 CarlaUE4/
 Unreal/CarlaUE4/Saved/
+VLLiNet_models/
 
 # ==========================================
 # OS Files
