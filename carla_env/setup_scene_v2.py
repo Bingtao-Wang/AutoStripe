@@ -23,11 +23,12 @@ from carla import ColorConverter as cc
 
 
 # ---------- Front camera parameters (shared by semantic / depth / RGB) ----------
-FRONT_CAM_X = 2.5
-FRONT_CAM_Z = 2.8
+# V4: resolution 1248x384 and position (1.5, 2.4) to match VLLiNet training config
+FRONT_CAM_X = 1.5
+FRONT_CAM_Z = 2.4
 FRONT_CAM_PITCH = -15
-FRONT_CAM_W = 800
-FRONT_CAM_H = 600
+FRONT_CAM_W = 1248
+FRONT_CAM_H = 384
 FRONT_CAM_FOV = 90
 
 

@@ -235,6 +235,63 @@ class VisionPathPlanner:
             dy = points[i+1][1] - points[i-1][1]
         return dx, dy
 
+    def estimate_nozzle_edge_distance(self, right_edges, vehicle_transform):
+        """Estimate lateral distance from nozzle to road edge via polynomial extrapolation.
+
+        Fits a quadratic curve to detected edge points in vehicle-local frame,
+        then extrapolates to lon=0 (vehicle position) to get the edge's lateral
+        distance at the nozzle.
+
+        Args:
+            right_edges: list of carla.Location — right road edge points
+            vehicle_transform: carla.Transform of the vehicle
+
+        Returns:
+            (distance_meters, poly_coefficients) or (None, None) if insufficient data.
+        """
+        if not right_edges or len(right_edges) < 5:
+            return None, None
+
+        veh_loc = vehicle_transform.location
+        veh_yaw = math.radians(vehicle_transform.rotation.yaw)
+        fwd_x = math.cos(veh_yaw)
+        fwd_y = math.sin(veh_yaw)
+        right_x = -fwd_y
+        right_y = fwd_x
+
+        # Transform edge points to vehicle-local (lon, lat)
+        lon_arr = []
+        lat_arr = []
+        for loc in right_edges:
+            dx = loc.x - veh_loc.x
+            dy = loc.y - veh_loc.y
+            lon = dx * fwd_x + dy * fwd_y
+            lat = dx * right_x + dy * right_y
+            if 3.0 < lon < 20.0 and lat > 0:
+                lon_arr.append(lon)
+                lat_arr.append(lat)
+
+        if len(lon_arr) < 5:
+            return None, None
+
+        lon_np = np.array(lon_arr)
+        lat_np = np.array(lat_arr)
+
+        # Fit quadratic: lat = a*lon^2 + b*lon + c
+        try:
+            coeffs = np.polyfit(lon_np, lat_np, deg=2)
+        except (np.linalg.LinAlgError, ValueError):
+            return None, None
+
+        # Extrapolated nozzle distance = polynomial value at lon=0 = c
+        nozzle_dist = float(coeffs[2])
+
+        # Sanity check: distance should be positive and reasonable
+        if nozzle_dist < 0.5 or nozzle_dist > 15.0:
+            return None, None
+
+        return nozzle_dist, coeffs
+
     def _extend_buffer(self, driving_pts, nozzle_pts, veh_loc, fwd_x, fwd_y):
         """Append only new points that extend beyond the buffer's furthest point.
 

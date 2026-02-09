@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!-- AutoStripe V4 launch file: CARLA-ROS Bridge + AutoStripe + RVIZ -->
+  <!-- Usage: roslaunch autostripe autostripe_v4.launch -->
+
+  <!-- Arguments -->
+  <arg name="host" default="localhost" />
+  <arg name="port" default="2000" />
+  <arg name="use_ai" default="true" />
+  <arg name="rviz" default="true" />
+  <arg name="rviz_config" default="$(find autostripe)/configs/rviz/autostripe_v4.rviz" />
+
+  <!-- CARLA-ROS Bridge -->
+  <include file="$(find carla_ros_bridge)/launch/carla_ros_bridge.launch">
+    <arg name="host" value="$(arg host)" />
+    <arg name="port" value="$(arg port)" />
+  </include>
+
+  <!-- Spawn sensors via objects config -->
+  <include file="$(find carla_spawn_objects)/launch/carla_spawn_objects.launch">
+    <arg name="objects_definition_file"
+         value="$(find autostripe)/configs/carla_objects_v4.json" />
+  </include>
+
+  <!-- AutoStripe V4 node -->
+  <node name="autostripe_v4"
+        pkg="autostripe"
+        type="autostripe_node.py"
+        output="screen"
+        cwd="node"
+        required="true">
+    <param name="use_ai" value="$(arg use_ai)" />
+  </node>
+
+  <!-- RVIZ -->
+  <node if="$(arg rviz)"
+        name="rviz"
+        pkg="rviz"
+        type="rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+</launch>

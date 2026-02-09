@@ -19,7 +19,7 @@ except ImportError:
 
 from ros_interface.topic_config import (
     TOPIC_ROAD_MASK, TOPIC_EDGE_OVERLAY, TOPIC_EDGE_MARKERS,
-    TOPIC_DRIVING_PATH, TOPIC_NOZZLE_PATH,
+    TOPIC_DRIVING_PATH, TOPIC_NOZZLE_PATH, TOPIC_POLY_CURVE,
     TOPIC_PAINT_TRAIL, TOPIC_VEHICLE_MARKER, TOPIC_STATUS_TEXT,
     FRAME_MAP,
 )
@@ -70,6 +70,8 @@ class RvizPublisher:
             TOPIC_VEHICLE_MARKER, Marker, queue_size=1)
         self.pub_status_text = rospy.Publisher(
             TOPIC_STATUS_TEXT, Marker, queue_size=1)
+        self.pub_poly_curve = rospy.Publisher(
+            TOPIC_POLY_CURVE, Marker, queue_size=1)
 
     def publish_road_mask(self, road_mask):
         """Publish binary road mask as mono8 image."""
@@ -187,3 +189,37 @@ class RvizPublisher:
         m.text = text
         m.lifetime = rospy.Duration(0.5)
         self.pub_status_text.publish(m)
+
+    def publish_poly_curve(self, poly_coeffs, vehicle_transform,
+                           num_points=20, max_lon=20.0):
+        """Publish polynomial extrapolation curve as LINE_STRIP (magenta)."""
+        import math
+        loc = vehicle_transform.location
+        rot = vehicle_transform.rotation
+        yaw = math.radians(rot.yaw)
+        fwd_x = math.cos(yaw)
+        fwd_y = math.sin(yaw)
+        right_x = -fwd_y
+        right_y = fwd_x
+
+        a, b, c = poly_coeffs
+
+        m = Marker()
+        m.header = _make_header()
+        m.ns = "poly_curve"
+        m.id = 0
+        m.type = Marker.LINE_STRIP
+        m.action = Marker.ADD
+        m.scale.x = 0.1
+        m.color = ColorRGBA(r=1.0, g=0.0, b=1.0, a=0.9)
+        m.lifetime = rospy.Duration(0.3)
+
+        for i in range(num_points + 1):
+            lon = max_lon * i / num_points
+            lat = a * lon**2 + b * lon + c
+            wx = loc.x + lon * fwd_x + lat * right_x
+            wy = loc.y + lon * fwd_y + lat * right_y
+            # ROS y-flip
+            m.points.append(Point(x=wx, y=-wy, z=loc.z + 0.3))
+
+        self.pub_poly_curve.publish(m)

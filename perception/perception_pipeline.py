@@ -2,6 +2,8 @@
 
 Combines RoadSegmentor, extract_road_edges, and DepthProjector into a single
 per-frame call that outputs world-coordinate road edges.
+
+V4: Supports both GT mode (CityScapes) and AI mode (VLLiNet) via use_ai flag.
 """
 
 import numpy as np
@@ -12,14 +14,29 @@ from perception.depth_projector import DepthProjector, decode_depth_image
 
 
 class PerceptionPipeline:
-    """Per-frame perception: semantic image + depth -> world-coordinate road edges."""
+    """Per-frame perception: semantic image + depth -> world-coordinate road edges.
 
-    def __init__(self, img_w, img_h, fov_deg):
-        self.segmentor = RoadSegmentor()
+    Args:
+        img_w, img_h, fov_deg: Camera parameters for depth projection.
+        use_ai: If True, use VLLiNet AI segmentor instead of GT CityScapes.
+        checkpoint_path: Path to VLLiNet checkpoint (only used if use_ai=True).
+    """
+
+    def __init__(self, img_w, img_h, fov_deg,
+                 use_ai=False, checkpoint_path=None):
+        self.use_ai = use_ai
+
+        if use_ai:
+            from perception.road_segmentor_ai import RoadSegmentorAI
+            self.segmentor = RoadSegmentorAI(
+                checkpoint_path=checkpoint_path)
+        else:
+            self.segmentor = RoadSegmentor()
+
         self.projector = DepthProjector(img_w, img_h, fov_deg)
 
     def process_frame(self, semantic_bgra, depth_bgra, camera_transform,
-                       cityscapes_bgra=None):
+                       cityscapes_bgra=None, rgb_bgra=None):
         """Run full perception pipeline on one frame.
 
         Args:
@@ -28,12 +45,17 @@ class PerceptionPipeline:
             camera_transform: carla.Transform of the front camera (world frame).
             cityscapes_bgra: np.ndarray (H,W,4) CityScapes-colored BGRA.
                              If None, falls back to raw semantic_bgra.
+            rgb_bgra: np.ndarray (H,W,4) from RGB camera (needed for AI mode).
 
         Returns:
             left_world, right_world, road_mask, left_px, right_px
         """
-        seg_input = cityscapes_bgra if cityscapes_bgra is not None else semantic_bgra
-        road_mask = self.segmentor.segment(seg_input)
+        if self.use_ai:
+            road_mask = self.segmentor.segment(rgb_bgra, depth_bgra)
+        else:
+            seg_input = cityscapes_bgra if cityscapes_bgra is not None else semantic_bgra
+            road_mask = self.segmentor.segment(seg_input)
+
         depth_m = decode_depth_image(depth_bgra)
 
         left_px, right_px = extract_road_edges_semantic(

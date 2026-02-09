@@ -13,7 +13,67 @@ Full design: `docs/Project_Design.md`
 - Map: Town05 (highway segment)
 - Vehicle: `vehicle.*stl*`, spawn at (10, -210, 1.85, yaw=180)
 
-## Current Version: V3 (Manual Painting Control + Enhanced Visualization)
+## Current Version: V4 (VLLiNet AI Perception + Polynomial Extrapolation)
+
+V4 replaces V3's ground-truth CityScapes segmentation with VLLiNet, a trained
+deep learning model (MaxF 98.33%, IoU 96.72%), moving toward real-world
+deployable perception. Key additions:
+- VLLiNet AI road segmentation (replaces CityScapes GT, G key toggles AI/GT)
+- Polynomial curve extrapolation for blind-spot nozzle distance
+- Native 1248x384 camera resolution (matches VLLiNet training)
+- CARLA-ROS Bridge integration (subscribes to Bridge topics)
+- Magenta polynomial curve visualization in 3D and RVIZ
+
+### V4 Architecture
+
+```text
+manual_painting_control_v4.py           -- V4 main entry point (AI/GT toggle + poly distance)
+diag_vllinet.py                         -- Standalone VLLiNet model verification script
+carla_env/setup_scene_v2.py             -- Scene: 1248x384 cameras, position (1.5, 2.4)
+perception/road_segmentor_ai.py         -- VLLiNet wrapper, same segment() interface
+perception/road_segmentor.py            -- GT CityScapes segmentor (preserved)
+perception/perception_pipeline.py       -- AI/GT dual mode via use_ai flag
+planning/vision_path_planner.py         -- + polynomial extrapolation (estimate_nozzle_edge_distance)
+ros_interface/autostripe_node.py        -- V4 ROS node (subscribes to CARLA-ROS Bridge)
+ros_interface/rviz_publisher.py         -- + poly curve marker publisher
+```
+
+### V4 Perception Pipeline (VLLiNet AI mode)
+
+Each frame:
+1. RGB camera -> BGRA -> RGB, ImageNet normalize -> [1, 3, 384, 1248] tensor
+2. Depth camera -> CARLA decode -> min-max normalize -> [1, 3, 384, 1248] tensor
+3. VLLiNet_Lite inference (mixed precision) -> sigmoid -> threshold 0.5
+4. Upsample to original resolution -> apply MASK_TOP_RATIO cutoff
+5. Edge extractor + depth projector (same as V3) -> world coordinates
+
+GT mode (G key toggle): falls back to V3 CityScapes pipeline.
+
+### V4 Key Changes from V3
+
+- Perception: CityScapes GT -> VLLiNet AI (G key toggles AI/GT for A/B comparison)
+- Camera resolution: 800x600 -> 1248x384 (native VLLiNet input, no software resize)
+- Camera position: (x=2.5, z=2.8) -> (x=1.5, z=2.4) (matches VLLiNet training)
+- Camera intrinsics: fx=fy=624 (for 1248px, FOV=90), cx=624, cy=192
+- Polynomial extrapolation: quadratic fit to edge points, extrapolate to lon=0 for blind spot
+- Magenta poly curve: 3D visualization of fitted quadratic in CARLA editor
+- Poly-Edge HUD: additional distance readout from polynomial extrapolation
+- ROS node: rewritten to subscribe to CARLA-ROS Bridge topics (no direct CARLA API)
+- RVIZ: poly curve marker topic (/autostripe/planning/poly_curve)
+- Pygame window: 1248x384 (matches camera resolution)
+
+### V4 Key Parameters
+
+- VLLiNet input: 1248x384, RGB ImageNet normalized, depth min-max [0,1]
+- VLLiNet output: 624x192 (1/2 res), upsampled back to 1248x384
+- VLLiNet depth channels: 3 (auto-detected from checkpoint)
+- Checkpoint: VLLiNet_models/checkpoints_carla/best_model.pth
+- Polynomial fit: quadratic (deg=2), edge points in [3m, 20m] range, min 5 points
+- Polynomial sanity: 0.5m < distance < 15.0m, else fallback to V3 median method
+- Front cameras: x=1.5, z=2.4, pitch=-15, 1248x384, FOV=90
+- All other parameters same as V3
+
+### V3 (Manual Painting Control + Enhanced Visualization) — preserved
 
 V3 builds on V2's vision perception pipeline, adding:
 - CityScapes-based road segmentation (replacing raw tag ID matching)
@@ -127,35 +187,44 @@ AutoStripe/
   main_v1.py                 # V1 entry point
   main_v2.py                 # V2 standalone entry point (auto only, no ROS)
   manual_painting_control.py # V3 main entry point (manual/auto + paint control)
+  manual_painting_control_v4.py # V4 main entry point (AI/GT + poly distance)
+  diag_vllinet.py            # V4 standalone VLLiNet model verification
   carla_env/
     __init__.py
     setup_scene.py            # V1 scene setup
-    setup_scene_v2.py         # V2/V3 scene: + semantic/depth/RGB front cameras + CityScapes
+    setup_scene_v2.py         # V2-V4 scene: 1248x384 cameras, position (1.5, 2.4)
   perception/
     __init__.py
-    road_segmentor.py         # CityScapes color matching -> road mask
+    road_segmentor.py         # GT: CityScapes color matching -> road mask
+    road_segmentor_ai.py      # V4: VLLiNet wrapper -> road mask
     edge_extractor.py         # Road mask -> left/right edge pixels
     depth_projector.py        # Pixel + depth -> world coordinates
-    perception_pipeline.py    # Combines above three steps
+    perception_pipeline.py    # AI/GT dual mode (use_ai flag)
   planning/
     __init__.py
     lane_planner.py           # V1 Map API planner
-    vision_path_planner.py    # V2/V3 vision-based path planner (with z coords)
+    vision_path_planner.py    # V2-V4 vision planner + polynomial extrapolation
   control/
     __init__.py
     marker_vehicle.py         # V1 Pure Pursuit
-    marker_vehicle_v2.py      # V2/V3 Pure Pursuit + dynamic path update
+    marker_vehicle_v2.py      # V2-V4 Pure Pursuit + dynamic path update
   ros_interface/
     __init__.py
-    topic_config.py           # ROS topic name constants
-    rviz_publisher.py         # RVIZ visualization publisher
-    autostripe_node.py        # Main ROS node
+    topic_config.py           # ROS topic name constants (+ poly_curve topic)
+    rviz_publisher.py         # RVIZ publisher (+ poly curve marker)
+    autostripe_node.py        # V4 ROS node (CARLA-ROS Bridge subscriber)
   configs/
     rviz/
-      autostripe_v2.rviz      # RVIZ layout config
+      autostripe_v2.rviz      # V2/V3 RVIZ layout
+      autostripe_v4.rviz      # V4 RVIZ layout (+ poly curve)
   launch/
-    autostripe_v2.launch      # Main launch file
+    autostripe_v2.launch      # V2/V3 launch file
+    autostripe_v4.launch      # V4 launch (Bridge + AutoStripe + RVIZ)
     rviz_only.launch          # RVIZ-only launch
+  VLLiNet_models/             # VLLiNet model code + checkpoint
+    models/vllinet.py         # VLLiNet_Lite model class
+    models/backbone.py        # MobileNetV3 + LiDAREncoder
+    checkpoints_carla/best_model.pth  # Trained checkpoint
   evaluation/                 # (reserved)
   datasets/                   # (reserved)
   docs/
@@ -179,8 +248,14 @@ AutoStripe/
 # Terminal 1: Start CARLA
 cd /home/peter/workspaces/carla-0.9.15/CARLA_0.9.15 && ./CarlaUE4.sh
 
-# Terminal 2: Run V3 Manual Painting Control (recommended)
+# Terminal 2: Run V4 AI Perception (recommended)
 cd /home/peter/workspaces/carla-0.9.15/CARLA_0.9.15/0MyCode/AutoStripe
+python manual_painting_control_v4.py
+
+# Terminal 2: Run V4 model diagnostic (verify VLLiNet loads)
+python diag_vllinet.py
+
+# Terminal 2: Run V3 Manual Painting Control (GT only)
 python manual_painting_control.py
 
 # Terminal 2: Run V2 Standalone (auto only, no manual control)
@@ -189,17 +264,21 @@ python main_v2.py
 # Terminal 2: Run V1 (Map API)
 python main_v1.py
 
-# Terminal 2: Run V2 with ROS + RVIZ
+# Terminal 2: Run V4 with ROS + RVIZ (requires CARLA-ROS Bridge)
 source /opt/ros/melodic/setup.bash
+roslaunch autostripe autostripe_v4.launch
+
+# Terminal 2: Run V2/V3 with ROS + RVIZ
 roslaunch autostripe autostripe_v2.launch
 ```
 
-### V3 Keyboard Controls
+### V4 Keyboard Controls
 
 | Key | Function |
 |-----|----------|
 | SPACE | Toggle painting ON/OFF |
 | TAB | Toggle Auto/Manual drive mode |
+| G | Toggle AI/GT perception mode |
 | WASD/Arrows | Manual drive (throttle/steer/brake) |
 | Q | Toggle reverse mode |
 | V | Toggle spectator follow/free camera |
@@ -208,7 +287,7 @@ roslaunch autostripe autostripe_v2.launch
 
 ## Future Versions (not yet implemented)
 
-- V3+: Replace CARLA semantic camera with LUNA-Net for real perception
-- V3+: Dashed lane dividers, center lines, all-weather support
-- V3+: Full evaluation pipeline: compare V3 trajectory vs Map API ground truth
-- V3+: Multi-lane support, obstacle avoidance
+- V4+: Replace VLLiNet with real-world trained model (transfer from CARLA to real camera)
+- V4+: Dashed lane dividers, center lines, all-weather support
+- V4+: Full evaluation pipeline: compare V4 AI trajectory vs Map API ground truth
+- V4+: Multi-lane support, obstacle avoidance

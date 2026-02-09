@@ -15,6 +15,7 @@ TOPIC_EDGE_MARKERS = "/autostripe/perception/edge_markers"
 # Planning
 TOPIC_DRIVING_PATH = "/autostripe/planning/driving_path"
 TOPIC_NOZZLE_PATH = "/autostripe/planning/nozzle_path"
+TOPIC_POLY_CURVE = "/autostripe/planning/poly_curve"
 
 # Control
 TOPIC_PAINT_TRAIL = "/autostripe/control/paint_trail"
