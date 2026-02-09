@@ -34,12 +34,14 @@ class VisionPathPlanner:
 
     def __init__(self, nozzle_arm=2.0, line_offset=3.0,
                  smooth_window=5, min_point_spacing=0.5,
-                 max_buffer_size=500):
+                 max_buffer_size=500, max_range=20.0, memory_frames=10):
         """
         Args:
             nozzle_arm:   distance from vehicle center to nozzle (right side), meters.
             line_offset:  distance from right edge where the line should be painted, meters.
             smooth_window: moving average window for edge smoothing.
+            max_range:    discard edge points beyond this forward distance (meters).
+            memory_frames: frames to keep last valid path when perception fails.
         """
         self.nozzle_arm = nozzle_arm
         self.line_offset = line_offset
@@ -47,16 +49,23 @@ class VisionPathPlanner:
         self.smooth_window = smooth_window
         self.min_point_spacing = min_point_spacing
         self.max_buffer_size = max_buffer_size
+        self.max_range = max_range
+        self.memory_frames = memory_frames
 
         # Accumulated path buffers (kept in sync)
         self.driving_coords = []   # list of (x, y)
         self.nozzle_locations = [] # list of carla.Location
 
+        # Short-term memory: fallback when perception fails
+        self._last_valid_driving = []
+        self._last_valid_nozzle = []
+        self._memory_counter = 0
+
     def update(self, right_edges, vehicle_transform):
         """Process one frame of right road edge and generate driving path.
 
-        Each frame replaces the buffer with the current perception result.
-        The blue line = real-time guidance from current road edge detection.
+        Includes short-term memory: if perception fails, returns last valid
+        path for up to memory_frames frames before giving up.
 
         Args:
             right_edges: list of carla.Location — right road edge points
@@ -66,23 +75,23 @@ class VisionPathPlanner:
             (driving_coords, nozzle_locations) — current frame path
         """
         if len(right_edges) < 2:
-            return self.driving_coords, self.nozzle_locations
+            return self._use_memory()
 
         veh_loc = vehicle_transform.location
         veh_yaw = math.radians(vehicle_transform.rotation.yaw)
         fwd_x = math.cos(veh_yaw)
         fwd_y = math.sin(veh_yaw)
 
-        # Sort right edge by longitudinal distance, keep only ahead
+        # Sort right edge by longitudinal distance, keep only ahead + within max_range
         right_sorted = self._sort_by_longitudinal(
             right_edges, veh_loc, fwd_x, fwd_y)
         if len(right_sorted) < 2:
-            return self.driving_coords, self.nozzle_locations
+            return self._use_memory()
 
         # Resample into 1m longitudinal bins
         edge_xy = self._resample_edge(right_sorted, veh_loc, fwd_x, fwd_y)
         if len(edge_xy) < 2:
-            return self.driving_coords, self.nozzle_locations
+            return self._use_memory()
 
         # Smooth the edge
         edge_xy = self._smooth_points(edge_xy)
@@ -96,6 +105,22 @@ class VisionPathPlanner:
         self.driving_coords = driving_pts[:n]
         self.nozzle_locations = nozzle_pts[:n]
 
+        # Save as last valid path and reset memory counter
+        self._last_valid_driving = list(self.driving_coords)
+        self._last_valid_nozzle = list(self.nozzle_locations)
+        self._memory_counter = self.memory_frames
+
+        return self.driving_coords, self.nozzle_locations
+
+    def _use_memory(self):
+        """Fallback: return last valid path if within memory window."""
+        if self._memory_counter > 0:
+            self._memory_counter -= 1
+            self.driving_coords = self._last_valid_driving
+            self.nozzle_locations = self._last_valid_nozzle
+        else:
+            self.driving_coords = []
+            self.nozzle_locations = []
         return self.driving_coords, self.nozzle_locations
 
     def _sort_by_longitudinal(self, edges, veh_loc, fwd_x, fwd_y):
@@ -105,8 +130,9 @@ class VisionPathPlanner:
             dy = loc.y - veh_loc.y
             return dx * fwd_x + dy * fwd_y
 
-        # Only keep points ahead of vehicle
-        ahead = [(loc, lon_dist(loc)) for loc in edges if lon_dist(loc) > 0.5]
+        # Only keep points ahead of vehicle and within max_range
+        ahead = [(loc, lon_dist(loc)) for loc in edges
+                 if 0.5 < lon_dist(loc) < self.max_range]
         ahead.sort(key=lambda x: x[1])
         return [loc for loc, _ in ahead]
 
@@ -226,14 +252,14 @@ class VisionPathPlanner:
         # Find the furthest longitudinal position in existing buffer
         max_lon_existing = -float('inf')
         if self.driving_coords:
-            for cx, cy in self.driving_coords:
-                d = lon(cx, cy)
+            for pt in self.driving_coords:
+                d = lon(pt[0], pt[1])
                 if d > max_lon_existing:
                     max_lon_existing = d
 
         # Append new points that are beyond the existing buffer end
         for i in range(n):
-            cx, cy = driving_pts[i]
+            cx, cy = driving_pts[i][0], driving_pts[i][1]
             d = lon(cx, cy)
             if d > max_lon_existing + self.min_point_spacing:
                 self.driving_coords.append(driving_pts[i])
@@ -271,9 +297,9 @@ class VisionPathPlanner:
             return
 
         cutoff = 0
-        for i, (cx, cy) in enumerate(self.driving_coords):
-            dx = cx - veh_loc.x
-            dy = cy - veh_loc.y
+        for i, pt in enumerate(self.driving_coords):
+            dx = pt[0] - veh_loc.x
+            dy = pt[1] - veh_loc.y
             lon = dx * fwd_x + dy * fwd_y
             if lon > -keep_behind:
                 cutoff = i

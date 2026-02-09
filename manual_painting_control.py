@@ -252,7 +252,7 @@ def draw_driving_path(world, driving_coords, vehicle_tf=None):
         dx = driving_coords[i][0] - veh_loc.x
         dy = driving_coords[i][1] - veh_loc.y
         lon = (dx * fwd.x / fwd_h + dy * fwd.y / fwd_h) if fwd_h > 1e-6 else 0.0
-        z = veh_loc.z + lon * slope + 0.5
+        z = veh_loc.z + lon * slope + 0.3
 
         pt = carla.Location(x=driving_coords[i][0],
                            y=driving_coords[i][1], z=z)
@@ -450,6 +450,50 @@ def main():
             veh_tf = vehicle.get_transform()
             driving_coords, _ = planner.update(right_world, veh_tf)  # 不使用预规划的nozzle_locs
 
+            # 可视化：右侧路沿检测点（红色小点，间隔≥2m，滤除离群点）
+            if right_world and len(right_world) > 3:
+                veh_loc = veh_tf.location
+                fwd = veh_tf.get_forward_vector()
+                fwd_h = math.sqrt(fwd.x**2 + fwd.y**2)
+                slope = fwd.z / fwd_h if fwd_h > 1e-6 else 0.0
+                right_x = -fwd.y / fwd_h if fwd_h > 1e-6 else 0.0
+                right_y = fwd.x / fwd_h if fwd_h > 1e-6 else 0.0
+
+                # 计算所有点的横向距离，用中位数滤除离群点
+                lats = []
+                for pt in right_world:
+                    dx = pt.x - veh_loc.x
+                    dy = pt.y - veh_loc.y
+                    lats.append(dx * right_x + dy * right_y)
+                lats_sorted = sorted(lats)
+                median_lat = lats_sorted[len(lats_sorted) // 2]
+
+                last_drawn = None
+                for pt in right_world:
+                    dx = pt.x - veh_loc.x
+                    dy = pt.y - veh_loc.y
+                    lon = (dx * fwd.x / fwd_h + dy * fwd.y / fwd_h) if fwd_h > 1e-6 else 0.0
+                    lat = dx * right_x + dy * right_y
+                    # 只显示前方20m内的点（与planner一致，避免远处slope外推偏差）
+                    if lon < 0.5 or lon > 20.0:
+                        continue
+                    # 滤除横向距离偏离中位数>3m的离群点
+                    if abs(lat - median_lat) > 3.0:
+                        continue
+                    # 间隔≥2m
+                    if last_drawn is not None:
+                        d = math.sqrt((pt.x - last_drawn.x)**2 + (pt.y - last_drawn.y)**2)
+                        if d < 2.0:
+                            continue
+                    # slope-based z（与蓝色驾驶点一致）
+                    z = veh_loc.z + lon * slope + 0.3
+                    world.debug.draw_point(
+                        carla.Location(x=pt.x, y=pt.y, z=z),
+                        size=0.08,
+                        color=carla.Color(255, 0, 0),
+                        life_time=0.1)
+                    last_drawn = pt
+
             # 控制：根据驾驶模式选择控制方式
             if paint_ctrl.auto_drive:
                 # 自动驾驶：使用 Pure Pursuit 控制器
@@ -487,7 +531,7 @@ def main():
                 dx_tp = tp[0] - veh_tf_now.location.x
                 dy_tp = tp[1] - veh_tf_now.location.y
                 lon_tp = (dx_tp * fwd.x / fwd_h + dy_tp * fwd.y / fwd_h) if fwd_h > 1e-6 else 0.0
-                tp_z = veh_tf_now.location.z + lon_tp * slope + 0.5
+                tp_z = veh_tf_now.location.z + lon_tp * slope + 0.3
 
                 tp_loc = carla.Location(x=tp[0], y=tp[1], z=tp_z)
                 tp_edge_dist, tp_edge_pt = compute_point_edge_distance(
@@ -512,7 +556,7 @@ def main():
 
             # 喷嘴边距：实际计算喷嘴到路沿的垂直距离
             nozzle_raised = carla.Location(
-                x=nozzle_loc.x, y=nozzle_loc.y, z=nozzle_loc.z + 0.5)
+                x=nozzle_loc.x, y=nozzle_loc.y, z=nozzle_loc.z + 0.3)
             edge_dist_r, nozzle_edge_pt = compute_point_edge_distance(
                 nozzle_raised, right_world, vehicle.get_transform())
 

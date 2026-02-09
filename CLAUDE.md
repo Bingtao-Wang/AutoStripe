@@ -56,9 +56,13 @@ Each frame:
 - Distance text on all views: 3D->2D projection + cv2.putText (debug.draw_string only works in editor)
 - Yellow paint line: gap handling with None markers (pause/resume no longer connects)
 - Manual painting control: pygame keyboard input (SPACE=paint, TAB=mode, WASD=drive)
-- Synchronous mode: fixed_delta_seconds=0.05, world.tick() each frame (eliminates spectator jitter)
+- Synchronous mode: fixed_delta_seconds=0.05, world.tick() each frame (eliminates spectator jitter, disabled for FPS)
 - Spectator follow: V key toggles follow/free camera in CARLA editor
 - Pure Pursuit lookahead: LOOKAHEAD_WPS=8 (reduced from 15 for closer target points)
+- Red edge dots: right road edge visualization (red draw_point, slope z, 20m range, 2m spacing, median lateral filter)
+- Short-term memory: planner keeps last valid path for 10 frames when perception fails
+- Distance truncation: planner discards edge points beyond 20m (reduces depth noise)
+- Visualization z offset: all debug drawings use +0.3 (lowered from +0.5 for less floating)
 
 ### V3 Key Parameters
 
@@ -71,8 +75,11 @@ Each frame:
 - Edge extraction: morphological close(15) + open(5), min road width 40px
 - Path planner: 1m longitudinal bins, smooth_window=5, min_spacing=0.5m
 - Pure Pursuit: LOOKAHEAD_WPS=8, wheelbase=2.875, Kdd=3.0, TARGET_SPEED=3.0 m/s
-- Synchronous mode: fixed_delta_seconds=0.05 (20 FPS), world.tick() per frame
+- Synchronous mode: fixed_delta_seconds=0.05 (20 FPS), world.tick() per frame (disabled for performance)
 - Spectator: behind=10m, height=6m, pitch=-20, get_forward_vector() offset
+- Visualization z offset: +0.3 above slope-projected road surface
+- Red edge dots: 20m max range, 2m min spacing, median lateral ±3m outlier filter
+- Path planner memory: 10 frames fallback, 20m max range truncation
 
 ### V1 (Map API based) — preserved
 
