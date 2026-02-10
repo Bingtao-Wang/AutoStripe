@@ -52,7 +52,7 @@ from models.backbone import LiDAREncoder
 CHECKPOINT_PATH = os.path.join(VLLINET_DIR, 'checkpoints_carla', 'best_model.pth')
 IMG_W, IMG_H = 1248, 384
 CAM_FOV = 90
-CAM_X, CAM_Z, CAM_PITCH = 1.5, 2.4, -15
+CAM_X, CAM_Z, CAM_PITCH = 2.5, 3.5, -10
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
@@ -151,7 +151,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if device.type == 'cuda':
         gpu_name = torch.cuda.get_device_name(0)
-        gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1e9
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"\nGPU: {gpu_name} ({gpu_mem:.1f} GB)")
     else:
         print("\nWARNING: No GPU detected, running on CPU (will be slow)")
@@ -267,7 +267,7 @@ def main():
 
             if device.type == 'cuda':
                 mem_used = torch.cuda.memory_allocated() / 1e6
-                mem_total = torch.cuda.get_device_properties(0).total_mem / 1e6
+                mem_total = torch.cuda.get_device_properties(0).total_memory / 1e6
                 cv2.putText(vis, f"GPU Mem: {mem_used:.0f}/{mem_total:.0f} MB",
                             (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                             (0, 255, 0), 2)

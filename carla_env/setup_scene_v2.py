@@ -23,10 +23,10 @@ from carla import ColorConverter as cc
 
 
 # ---------- Front camera parameters (shared by semantic / depth / RGB) ----------
-# V4: resolution 1248x384 and position (1.5, 2.4) to match VLLiNet training config
-FRONT_CAM_X = 1.5
-FRONT_CAM_Z = 2.4
-FRONT_CAM_PITCH = -15
+# V4: resolution 1248x384, position (2.5, 2.8) to clear vehicle body
+FRONT_CAM_X = 2.5
+FRONT_CAM_Z = 3.5
+FRONT_CAM_PITCH = -10
 FRONT_CAM_W = 1248
 FRONT_CAM_H = 384
 FRONT_CAM_FOV = 90
@@ -59,8 +59,15 @@ def setup_scene_v2(map_name="Town05", spawn_x=10, spawn_y=-210,
     client.set_timeout(200)
 
     world = client.load_world(map_name)
-    weather = carla.WeatherParameters.ClearNoon
-    weather.sun_altitude_angle = 45.0
+    weather = carla.WeatherParameters()
+    weather.cloudiness = 10.0
+    weather.precipitation = 0.0
+    weather.precipitation_deposits = 0.0
+    weather.wind_intensity = 5.0
+    weather.sun_altitude_angle = 5.0
+    weather.fog_density = 0.0
+    weather.fog_distance = 100.0
+    weather.wetness = 0.0
     world.set_weather(weather)
 
     bp_lib = world.get_blueprint_library()

@@ -9,7 +9,7 @@ V4: Supports both GT mode (CityScapes) and AI mode (VLLiNet) via use_ai flag.
 import numpy as np
 
 from perception.road_segmentor import RoadSegmentor
-from perception.edge_extractor import extract_road_edges_semantic
+from perception.edge_extractor import extract_road_edges_semantic, extract_road_edges_mask
 from perception.depth_projector import DepthProjector, decode_depth_image
 
 
@@ -49,6 +49,7 @@ class PerceptionPipeline:
 
         Returns:
             left_world, right_world, road_mask, left_px, right_px
+            In AI mode, also returns gt_right_world, gt_right_px as 6th/7th elements.
         """
         if self.use_ai:
             road_mask = self.segmentor.segment(rgb_bgra, depth_bgra)
@@ -58,12 +59,29 @@ class PerceptionPipeline:
 
         depth_m = decode_depth_image(depth_bgra)
 
-        left_px, right_px = extract_road_edges_semantic(
-            semantic_bgra, depth_m, self.projector, camera_transform)
+        if self.use_ai:
+            # AI edges: from VLLiNet road mask
+            left_px, right_px = extract_road_edges_mask(road_mask, depth_m)
+            left_world = self.projector.project_pixels(
+                left_px, depth_m, camera_transform)
+            right_world = self.projector.project_pixels(
+                right_px, depth_m, camera_transform)
 
-        left_world = self.projector.project_pixels(
-            left_px, depth_m, camera_transform)
-        right_world = self.projector.project_pixels(
-            right_px, depth_m, camera_transform)
+            # GT edges: from semantic tags (reference)
+            _, gt_right_px = extract_road_edges_semantic(
+                semantic_bgra, depth_m)
+            gt_right_world = self.projector.project_pixels(
+                gt_right_px, depth_m, camera_transform)
 
-        return left_world, right_world, road_mask, left_px, right_px
+            return (left_world, right_world, road_mask, left_px, right_px,
+                    gt_right_world, gt_right_px)
+        else:
+            left_px, right_px = extract_road_edges_semantic(
+                semantic_bgra, depth_m)
+            left_world = self.projector.project_pixels(
+                left_px, depth_m, camera_transform)
+            right_world = self.projector.project_pixels(
+                right_px, depth_m, camera_transform)
+
+            return (left_world, right_world, road_mask, left_px, right_px,
+                    None, None)

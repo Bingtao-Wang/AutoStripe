@@ -147,3 +147,73 @@ def _smooth_edge(pixels):
     ], dtype=np.int32)
 
     return [(int(u), v) for u, v in zip(smoothed, vs)]
+
+
+def extract_road_edges_mask(road_mask, depth_m=None):
+    """Extract road edges from a binary mask (e.g. VLLiNet output).
+
+    Per-row scan from center outward: the edge is where road (mask>0)
+    transitions to non-road (mask==0).
+
+    Args:
+        road_mask: (H, W) uint8, 255=road, 0=other.
+        depth_m:   (H, W) float32 depth in meters (optional).
+
+    Returns:
+        left_pixels, right_pixels: lists of (u, v) tuples.
+    """
+    h, w = road_mask.shape[:2]
+    has_depth = depth_m is not None
+    row_start = int(h * ROW_START_RATIO)
+    cx = w // 2
+    right_raw = []
+    left_raw = []
+
+    for v in range(row_start, h):
+        if has_depth and depth_m[v, cx] < MIN_DEPTH:
+            continue
+
+        row = road_mask[v, :]
+
+        # Right edge: scan rightward from center, find last road pixel
+        ru = _find_mask_edge(row, depth_m[v, :] if has_depth else None,
+                             range(cx, w))
+        if ru is not None:
+            right_raw.append((ru, v))
+
+        # Left edge: scan leftward from center
+        left_limit = max(0, cx - MAX_LEFT_SCAN)
+        lu = _find_mask_edge(row, depth_m[v, :] if has_depth else None,
+                             range(cx, left_limit - 1, -1))
+        if lu is not None:
+            left_raw.append((lu, v))
+
+    return _smooth_edge(left_raw), _smooth_edge(right_raw)
+
+
+def _find_mask_edge(row_mask, row_depth, u_range):
+    """Find the pixel where road mask transitions to non-road.
+
+    Scans along u_range. Requires MIN_ROAD_RUN consecutive road pixels,
+    then returns the first non-road pixel (the edge).
+    """
+    road_run = 0
+    found_road = False
+
+    for u in u_range:
+        if row_depth is not None:
+            d = float(row_depth[u])
+            if d < MIN_DEPTH or d > MAX_DEPTH:
+                road_run = 0
+                continue
+
+        if row_mask[u] > 0:
+            road_run += 1
+            if road_run >= MIN_ROAD_RUN:
+                found_road = True
+        else:
+            if found_road:
+                return u
+            road_run = 0
+
+    return None

@@ -12,6 +12,7 @@ Keyboard Controls:
   SPACE - Toggle painting ON/OFF
   TAB   - Toggle Auto/Manual drive mode
   G     - Toggle AI/GT perception mode
+  R     - Toggle video recording (front + overhead)
   WASD/Arrows - Manual drive
   Q     - Toggle reverse
   V     - Toggle spectator follow/free camera
@@ -28,9 +29,8 @@ import os
 import sys
 import time
 import math
-import threading
 import pygame
-from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g
+from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r
 from pygame.locals import K_w, K_a, K_s, K_d, K_x, K_v
 from pygame.locals import K_UP, K_DOWN, K_LEFT, K_RIGHT
 
@@ -54,6 +54,7 @@ from carla_env.setup_scene import update_spectator
 from perception.perception_pipeline import PerceptionPipeline
 from planning.vision_path_planner import VisionPathPlanner
 from control.marker_vehicle_v2 import MarkerVehicleV2
+from utils.video_recorder import VideoRecorder
 
 
 def get_nozzle_position(vehicle, offset=2.0):
@@ -170,8 +171,7 @@ class ManualPaintingControl:
 
 def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
                         drive_mode="AUTO", throttle=0.0, steer=0.0, brake=0.0,
-                        tp_edge_dist=999.0, perception_mode="AI",
-                        poly_dist=None):
+                        perception_mode="AI", poly_dist=None, fps=0.0):
     """Draw status info on overhead image."""
     h, w = img.shape[:2]
 
@@ -187,6 +187,11 @@ def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
     cv2.putText(img, perc_text, (350, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, perc_color, 3)
 
+    # FPS
+    fps_color = (0, 255, 0) if fps >= 15 else (0, 255, 255) if fps >= 10 else (0, 0, 255)
+    cv2.putText(img, f"FPS: {fps:.0f}", (650, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, fps_color, 3)
+
     # Paint status
     status_text = "PAINT: ON" if painting_enabled else "PAINT: OFF"
     status_color = (0, 255, 0) if painting_enabled else (0, 0, 255)
@@ -198,25 +203,22 @@ def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
     cv2.putText(img, f"Nozzle-Edge: {edge_dist_r:.1f}m", (20, 160),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
-    tp_dist_text = f"TP-Edge: {tp_edge_dist:.1f}m" if tp_edge_dist < 900 else "TP-Edge: N/A"
-    cv2.putText(img, tp_dist_text, (20, 200),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3)
 
     # Polynomial distance
     if poly_dist is not None:
-        cv2.putText(img, f"Poly-Edge: {poly_dist:.1f}m", (20, 240),
+        cv2.putText(img, f"Poly-Edge: {poly_dist:.1f}m", (20, 200),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 3)
     else:
-        cv2.putText(img, "Poly-Edge: N/A", (20, 240),
+        cv2.putText(img, "Poly-Edge: N/A", (20, 200),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (150, 150, 150), 2)
 
     # Manual control status
     if drive_mode == "MANUAL":
-        cv2.putText(img, f"Throttle: {throttle:.2f}", (20, 270),
+        cv2.putText(img, f"Throttle: {throttle:.2f}", (20, 240),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(img, f"Steer: {steer:.2f}", (20, 300),
+        cv2.putText(img, f"Steer: {steer:.2f}", (20, 270),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(img, f"Brake: {brake:.2f}", (20, 330),
+        cv2.putText(img, f"Brake: {brake:.2f}", (20, 300),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
     # Help text
@@ -379,14 +381,29 @@ def world_to_front_pixel(wx, wy, wz, cam_tf,
     return px, py
 
 
+# --- Spawn point presets (Town05 highway) ---
+SPAWN_POINTS = {
+    1: {"x": 10,     "y": -210,   "z": 1.85, "yaw": 180,   "desc": "Highway straight (original)"},
+    2: {"x": 210.7,  "y": -11.3,  "z": 0.30, "yaw": -90.7, "desc": "East corridor southbound"},
+    3: {"x": 42.4,   "y": -187.0, "z": 0.30, "yaw": -0.2,  "desc": "Highway east eastbound (right)"},
+    4: {"x": 155.0,  "y": -5.7,   "z": 0.60, "yaw": -90.1, "desc": "East straight southbound"},
+    5: {"x": 90.0,   "y": -190.0, "z": 0.50, "yaw": -0.2,  "desc": "Highway SP1 reverse into right curve"},
+}
+ACTIVE_SPAWN = 5  # <-- Change this to switch spawn point
+
+
 def main():
+    sp = SPAWN_POINTS[ACTIVE_SPAWN]
     print("=" * 60)
     print("  AutoStripe V4 - AI Perception + Manual Painting Control")
+    print(f"  Spawn #{ACTIVE_SPAWN}: {sp['desc']}")
+    print(f"  Location: x={sp['x']}, y={sp['y']}, yaw={sp['yaw']}")
     print("=" * 60)
     print("\nControls:")
     print("  SPACE - Toggle painting ON/OFF")
     print("  TAB   - Toggle Auto/Manual drive")
     print("  G     - Toggle AI/GT perception")
+    print("  R     - Toggle video recording")
     print("  ESC   - Quit")
     print("\nStarting...\n")
 
@@ -403,7 +420,9 @@ def main():
 
     try:
         # 1. Setup scene
-        scene = setup_scene_v2()
+        scene = setup_scene_v2(
+            spawn_x=sp['x'], spawn_y=sp['y'],
+            spawn_z=sp['z'], spawn_yaw=sp['yaw'])
         actors = scene['actors']
         world = scene['world']
         vehicle = scene['vehicle']
@@ -414,6 +433,9 @@ def main():
             use_ai=use_ai_mode
         )
         planner = VisionPathPlanner(
+            line_offset=3.0, nozzle_arm=2.0, smooth_window=5
+        )
+        planner_gt = VisionPathPlanner(
             line_offset=3.0, nozzle_arm=2.0, smooth_window=5
         )
         controller = MarkerVehicleV2(vehicle, wheelbase=2.875, kdd=3.0)
@@ -427,11 +449,21 @@ def main():
             time.sleep(0.05)
         print("Sensors ready.\n")
 
+        # 4b. Video recorder (R key to toggle)
+        recorder = VideoRecorder()
+
         # 5. Main loop
         frame_count = 0
         spectator_follow = True
         poly_dist = None
         poly_coeffs = None
+        poly_dist_history = []
+        POLY_SMOOTH_WINDOW = 10
+        last_time = time.time()
+        fps = 0.0
+        PERCEPT_INTERVAL = 3  # run VLLiNet every N frames
+        cached_result = None
+        cached_road_mask = None
 
         print("=" * 60)
         print("  System ready! Press SPACE to start painting")
@@ -440,6 +472,10 @@ def main():
 
         while True:
             frame_count += 1
+            now = time.time()
+            dt = now - last_time
+            last_time = now
+            fps = 1.0 / dt if dt > 0 else 0.0
 
             # --- Read sensor data ---
             with scene['_semantic_lock']:
@@ -456,25 +492,50 @@ def main():
                 time.sleep(0.05)
                 continue
 
-            # --- Perception: extract road edges ---
-            cam_tf = scene['semantic_cam'].get_transform()
-            left_world, right_world, road_mask, left_px, right_px = \
-                perception.process_frame(
+            # --- Perception: extract road edges (skip-frame) ---
+            run_percept = (frame_count % PERCEPT_INTERVAL == 1) or cached_result is None
+            if run_percept:
+                cam_tf = scene['semantic_cam'].get_transform()
+                result = perception.process_frame(
                     sem_data, depth_data, cam_tf,
                     cityscapes_bgra=cs_data,
                     rgb_bgra=rgb_front
                 )
+                cached_result = result
+                cached_road_mask = result[2]
+            else:
+                result = cached_result
 
-            # --- Planning: generate driving path ---
+            left_world, right_world, road_mask, left_px, right_px = result[:5]
+            road_mask = cached_road_mask
+            gt_right_world = result[5] if len(result) > 5 else None
+            gt_right_px = result[6] if len(result) > 6 else None
+
+            # --- Planning: generate driving path (AI edges) ---
             veh_tf = vehicle.get_transform()
             driving_coords, _ = planner.update(right_world, veh_tf)
 
+            # --- Planning: GT reference path ---
+            driving_coords_gt = []
+            if gt_right_world is not None:
+                driving_coords_gt, _ = planner_gt.update(gt_right_world, veh_tf)
+
             # --- Polynomial extrapolation ---
-            poly_dist, poly_coeffs = planner.estimate_nozzle_edge_distance(
+            poly_dist_raw, poly_coeffs = planner.estimate_nozzle_edge_distance(
                 right_world, veh_tf)
 
-            # --- Visualize: right edge red dots ---
-            _draw_right_edge_dots(world, right_world, veh_tf)
+            # Temporal smoothing (median filter)
+            if poly_dist_raw is not None:
+                poly_dist_history.append(poly_dist_raw)
+                if len(poly_dist_history) > POLY_SMOOTH_WINDOW:
+                    poly_dist_history.pop(0)
+                poly_dist = float(np.median(poly_dist_history))
+            else:
+                poly_dist = None
+
+            # --- Visualize: right edge red dots (skip in AI mode to avoid polluting camera) ---
+            if not use_ai_mode:
+                _draw_right_edge_dots(world, right_world, veh_tf)
 
             # --- Control ---
             if paint_ctrl.auto_drive:
@@ -487,9 +548,10 @@ def main():
             nozzle_loc = get_nozzle_position(vehicle)
             paint_ctrl.paint_line(world, nozzle_loc)
 
-            # --- Visualize: driving path + poly curve ---
-            draw_driving_path(world, driving_coords, vehicle.get_transform())
-            draw_poly_curve(world, poly_coeffs, vehicle.get_transform())
+            # --- Visualize: driving path + poly curve (skip in AI mode) ---
+            if not use_ai_mode:
+                draw_driving_path(world, driving_coords, veh_tf)
+                draw_poly_curve(world, poly_coeffs, veh_tf)
 
             # --- Spectator follow ---
             if spectator_follow:
@@ -499,72 +561,92 @@ def main():
             veh_vel = vehicle.get_velocity()
             speed = math.sqrt(veh_vel.x**2 + veh_vel.y**2)
 
-            # TP-Edge distance (cyan line)
-            tp_edge_dist = 999.0
-            tp_mid = None
-            if len(driving_coords) > 0:
-                veh_tf_now = vehicle.get_transform()
-                fwd = veh_tf_now.get_forward_vector()
-                fwd_h = math.sqrt(fwd.x**2 + fwd.y**2)
-                slope = fwd.z / fwd_h if fwd_h > 1e-6 else 0.0
-
-                tp = driving_coords[0]
-                dx_tp = tp[0] - veh_tf_now.location.x
-                dy_tp = tp[1] - veh_tf_now.location.y
-                lon_tp = (dx_tp * fwd.x / fwd_h + dy_tp * fwd.y / fwd_h) \
-                    if fwd_h > 1e-6 else 0.0
-                tp_z = veh_tf_now.location.z + lon_tp * slope + 0.3
-
-                tp_loc = carla.Location(x=tp[0], y=tp[1], z=tp_z)
-                tp_edge_dist, tp_edge_pt = compute_point_edge_distance(
-                    tp_loc, right_world, veh_tf_now)
-
-                if tp_edge_pt is not None:
-                    tp_edge_pt.z = tp_z
-                    world.debug.draw_line(
-                        tp_loc, tp_edge_pt,
-                        thickness=0.08,
-                        color=carla.Color(0, 255, 255),
-                        life_time=0.1)
-                    tp_mid = carla.Location(
-                        x=(tp_loc.x + tp_edge_pt.x) / 2,
-                        y=(tp_loc.y + tp_edge_pt.y) / 2,
-                        z=tp_z + 0.3)
-                    world.debug.draw_string(
-                        tp_mid, f"{tp_edge_dist:.1f}m",
-                        color=carla.Color(0, 255, 255),
-                        life_time=0.1)
+            nozzle_edge_pt = None
+            nozzle_raised = None
 
             # Nozzle-Edge distance (green line)
             nozzle_raised = carla.Location(
                 x=nozzle_loc.x, y=nozzle_loc.y, z=nozzle_loc.z + 0.3)
             edge_dist_r, nozzle_edge_pt = compute_point_edge_distance(
-                nozzle_raised, right_world, vehicle.get_transform())
+                nozzle_raised, right_world, veh_tf)
 
             nozzle_mid = None
             if nozzle_edge_pt is not None:
-                world.debug.draw_line(
-                    nozzle_raised, nozzle_edge_pt,
-                    thickness=0.08,
-                    color=carla.Color(0, 255, 0),
-                    life_time=0.1)
                 nozzle_mid = carla.Location(
                     x=(nozzle_raised.x + nozzle_edge_pt.x) / 2,
                     y=(nozzle_raised.y + nozzle_edge_pt.y) / 2,
                     z=nozzle_raised.z + 0.3)
-                world.debug.draw_string(
-                    nozzle_mid, f"{edge_dist_r:.1f}m",
-                    color=carla.Color(0, 255, 0),
-                    life_time=0.1)
+                if not use_ai_mode:
+                    world.debug.draw_line(
+                        nozzle_raised, nozzle_edge_pt,
+                        thickness=0.08,
+                        color=carla.Color(0, 255, 0),
+                        life_time=0.1)
+                    world.debug.draw_string(
+                        nozzle_mid, f"{edge_dist_r:.1f}m",
+                        color=carla.Color(0, 255, 0),
+                        life_time=0.1)
+
+            # Poly-Edge: cyan line from first TP -> poly-extrapolated edge (like V3)
+            poly_edge_pt = None
+            tp_loc = None
+            if poly_coeffs is not None and len(driving_coords) > 0:
+                veh_tf_now = veh_tf
+                yaw = math.radians(veh_tf_now.rotation.yaw)
+                fwd_x = math.cos(yaw)
+                fwd_y = math.sin(yaw)
+                right_x = -fwd_y
+                right_y = fwd_x
+
+                # First tracking point
+                tp = driving_coords[0]
+                tp_wx = tp[0] if not hasattr(tp, 'x') else tp.x
+                tp_wy = tp[1] if not hasattr(tp, 'y') else tp.y
+                dx_tp = tp_wx - veh_tf_now.location.x
+                dy_tp = tp_wy - veh_tf_now.location.y
+                lon_tp = dx_tp * fwd_x + dy_tp * fwd_y
+
+                # Slope-aware z for TP
+                fwd_vec = veh_tf_now.get_forward_vector()
+                fwd_h = math.sqrt(fwd_vec.x**2 + fwd_vec.y**2)
+                slope = fwd_vec.z / fwd_h if fwd_h > 1e-6 else 0.0
+                tp_z = veh_tf_now.location.z + lon_tp * slope + 0.3
+                tp_loc = carla.Location(x=tp_wx, y=tp_wy, z=tp_z)
+
+                # Evaluate polynomial at TP's longitudinal position
+                a, b, c = poly_coeffs
+                lat_at_tp = a * lon_tp**2 + b * lon_tp + c
+                poly_edge_pt = carla.Location(
+                    x=tp_wx + lat_at_tp * right_x,
+                    y=tp_wy + lat_at_tp * right_y,
+                    z=tp_z)
 
             # --- Render overhead view ---
-            _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
-                             edge_dist_r, tp_edge_dist, nozzle_mid, tp_mid,
-                             speed, frame_count, poly_dist, use_ai_mode)
+            overhead_img = _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
+                             edge_dist_r, nozzle_mid,
+                             speed, frame_count, poly_dist, use_ai_mode,
+                             right_world=right_world,
+                             driving_coords=driving_coords,
+                             poly_coeffs=poly_coeffs,
+                             nozzle_raised=nozzle_raised,
+                             nozzle_edge_pt=nozzle_edge_pt,
+                             driving_coords_gt=driving_coords_gt,
+                             poly_edge_pt=poly_edge_pt,
+                             tp_loc=tp_loc, fps=fps)
+
+            # --- Record overhead frame ---
+            recorder.write_overhead(overhead_img)
 
             # --- Render front view in pygame ---
             _render_front_view(pg_screen, rgb_front, road_mask, scene,
-                               nozzle_mid, tp_mid, edge_dist_r, tp_edge_dist)
+                               nozzle_mid, edge_dist_r,
+                               right_world, driving_coords, poly_coeffs,
+                               veh_tf, use_ai_mode,
+                               nozzle_raised, nozzle_edge_pt,
+                               right_px=right_px, poly_dist=poly_dist,
+                               driving_coords_gt=driving_coords_gt,
+                               poly_edge_pt=poly_edge_pt,
+                               tp_loc=tp_loc)
 
             # --- Event handling ---
             should_exit = False
@@ -584,6 +666,10 @@ def main():
                         spectator_follow = not spectator_follow
                         mode = "FOLLOW" if spectator_follow else "FREE"
                         print(f"\n  Camera: {mode}\n")
+                    elif event.key == K_r:
+                        recorder.toggle(
+                            front_size=(FRONT_CAM_W, FRONT_CAM_H),
+                            overhead_size=(1800, 1600))
                     elif event.key == K_g:
                         use_ai_mode = not use_ai_mode
                         perception = PerceptionPipeline(
@@ -604,8 +690,6 @@ def main():
             if not paint_ctrl.auto_drive:
                 paint_ctrl.update_manual_control(keys)
 
-            cv2.waitKey(1)
-
             # --- Pygame HUD overlay ---
             perc_mode = "AI" if use_ai_mode else "GT"
             lines = [
@@ -613,6 +697,8 @@ def main():
                  (0, 255, 0) if paint_ctrl.auto_drive else (255, 255, 0)),
                 (f"Perc: {perc_mode}",
                  (255, 0, 255) if use_ai_mode else (0, 255, 0)),
+                (f"FPS: {fps:.0f}",
+                 (0, 255, 0) if fps >= 15 else (0, 255, 255) if fps >= 10 else (255, 0, 0)),
                 ("Paint: ON" if paint_ctrl.painting_enabled else "Paint: OFF",
                  (0, 255, 0) if paint_ctrl.painting_enabled else (150, 150, 150)),
                 ("Reverse: ON" if paint_ctrl.reverse else "",
@@ -621,32 +707,40 @@ def main():
                 (f"Nozzle-Edge: {edge_dist_r:.1f}m", (0, 255, 0)),
                 (f"Poly-Edge: {poly_dist:.1f}m" if poly_dist else "Poly-Edge: N/A",
                  (255, 0, 255)),
-                (f"TP-Edge: {tp_edge_dist:.1f}m" if tp_edge_dist < 900
-                 else "TP-Edge: N/A", (0, 255, 255)),
                 (f"Thr:{paint_ctrl.throttle:.1f} Str:{paint_ctrl.steer:.2f} Brk:{paint_ctrl.brake:.1f}",
                  (255, 255, 255)),
                 ("", (0, 0, 0)),
+                ("REC" if recorder.is_recording else "",
+                 (255, 0, 0)),
                 ("Cam: FOLLOW" if spectator_follow else "Cam: FREE",
                  (0, 200, 255) if spectator_follow else (255, 150, 0)),
-                ("TAB=Mode SPACE=Paint G=AI/GT Q=Rev", (200, 200, 200)),
+                ("TAB=Mode SPACE=Paint G=AI/GT R=Rec", (200, 200, 200)),
                 ("V=Cam WASD=Drive X=Brake ESC=Quit", (200, 200, 200)),
             ]
             for i, (text, color) in enumerate(lines):
                 if text:
                     surf = pg_font.render(text, True, color)
                     pg_screen.blit(surf, (10, 8 + i * 22))
+
+            # --- Record front frame (capture pygame surface with HUD) ---
+            if recorder.is_recording:
+                front_arr = pygame.surfarray.array3d(pg_screen)
+                front_bgr = cv2.cvtColor(
+                    front_arr.swapaxes(0, 1), cv2.COLOR_RGB2BGR)
+                recorder.write_front(front_bgr)
+
             pygame.display.flip()
             pg_clock.tick(30)
 
             # Periodic status print
             if frame_count % 50 == 0:
                 status = "ON" if paint_ctrl.painting_enabled else "OFF"
-                tp_d = f"{tp_edge_dist:.1f}" if tp_edge_dist < 900 else "N/A"
                 poly_d = f"{poly_dist:.1f}" if poly_dist else "N/A"
+                gt_pts = len(driving_coords_gt) if driving_coords_gt else 0
                 print(f"[F{frame_count}] Paint:{status} Perc:{perc_mode} "
                       f"Spd:{speed:.1f} Noz:{edge_dist_r:.1f}m "
-                      f"Poly:{poly_d}m TP:{tp_d}m "
-                      f"Path:{len(driving_coords)}pts")
+                      f"Poly:{poly_d}m "
+                      f"AI:{len(driving_coords)}pts GT:{gt_pts}pts")
 
     except KeyboardInterrupt:
         print("\nInterrupted...")
@@ -658,6 +752,7 @@ def main():
 
     finally:
         print("\nCleaning up...")
+        recorder.release()
         pygame.quit()
         cv2.destroyAllWindows()
         for actor in actors:
@@ -711,8 +806,12 @@ def _draw_right_edge_dots(world, right_world, veh_tf):
 
 
 def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
-                     edge_dist_r, tp_edge_dist, nozzle_mid, tp_mid,
-                     speed, frame_count, poly_dist, use_ai_mode):
+                     edge_dist_r, nozzle_mid,
+                     speed, frame_count, poly_dist, use_ai_mode,
+                     right_world=None, driving_coords=None,
+                     poly_coeffs=None, nozzle_raised=None,
+                     nozzle_edge_pt=None, driving_coords_gt=None,
+                     poly_edge_pt=None, tp_loc=None, fps=0.0):
     """Render overhead view with overlays."""
     if overhead_data is None:
         return
@@ -731,15 +830,80 @@ def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
             px1, py1 = world_to_pixel(x1, y1, veh_tf)
             cv2.line(img, (px0, py0), (px1, py1), (0, 255, 255), 3)
 
+    # --- 2D overlays: edge dots, path dots, poly curve, distance lines ---
+    if veh_tf is not None:
+        oh, ow = img.shape[:2]
+
+        # Red dots: right road edge
+        if right_world:
+            for pt in right_world:
+                wx = pt.x if hasattr(pt, 'x') else pt[0]
+                wy = pt.y if hasattr(pt, 'y') else pt[1]
+                px, py = world_to_pixel(wx, wy, veh_tf, ow, oh)
+                if 0 <= px < ow and 0 <= py < oh:
+                    cv2.circle(img, (px, py), 4, (0, 0, 255), -1)
+
+        # Blue dots: AI driving path
+        if driving_coords:
+            for i in range(0, len(driving_coords), 2):
+                pt = driving_coords[i]
+                dx = pt[0] if not hasattr(pt, 'x') else pt.x
+                dy = pt[1] if not hasattr(pt, 'y') else pt.y
+                px, py = world_to_pixel(dx, dy, veh_tf, ow, oh)
+                if 0 <= px < ow and 0 <= py < oh:
+                    cv2.circle(img, (px, py), 5, (255, 0, 0), -1)
+
+        # Purple dots: GT reference path
+        if driving_coords_gt:
+            for i in range(0, len(driving_coords_gt), 2):
+                pt = driving_coords_gt[i]
+                dx = pt[0] if not hasattr(pt, 'x') else pt.x
+                dy = pt[1] if not hasattr(pt, 'y') else pt.y
+                px, py = world_to_pixel(dx, dy, veh_tf, ow, oh)
+                if 0 <= px < ow and 0 <= py < oh:
+                    cv2.circle(img, (px, py), 5, (128, 0, 128), -1)
+
+        # Magenta curve: polynomial extrapolation
+        if poly_coeffs is not None and len(poly_coeffs) == 3:
+            fwd = veh_tf.get_forward_vector()
+            fwd_h = math.sqrt(fwd.x**2 + fwd.y**2)
+            if fwd_h > 1e-6:
+                right_x = -fwd.y / fwd_h
+                right_y = fwd.x / fwd_h
+                poly_pts = []
+                for lon in np.linspace(0, 20, 40):
+                    lat = poly_coeffs[0]*lon**2 + poly_coeffs[1]*lon + poly_coeffs[2]
+                    wx = veh_tf.location.x + (fwd.x/fwd_h)*lon + right_x*lat
+                    wy = veh_tf.location.y + (fwd.y/fwd_h)*lon + right_y*lat
+                    px, py = world_to_pixel(wx, wy, veh_tf, ow, oh)
+                    if 0 <= px < ow and 0 <= py < oh:
+                        poly_pts.append((px, py))
+                for i in range(len(poly_pts) - 1):
+                    cv2.line(img, poly_pts[i], poly_pts[i+1], (255, 0, 255), 2)
+
+        # Green line: nozzle -> road edge
+        if nozzle_raised is not None and nozzle_edge_pt is not None:
+            p1 = world_to_pixel(nozzle_raised.x, nozzle_raised.y, veh_tf, ow, oh)
+            p2 = world_to_pixel(nozzle_edge_pt.x, nozzle_edge_pt.y, veh_tf, ow, oh)
+            cv2.line(img, p1, p2, (0, 255, 0), 2)
+
+        # Cyan line: first TP -> poly-extrapolated edge (like V3)
+        if tp_loc is not None and poly_edge_pt is not None:
+            p1 = world_to_pixel(tp_loc.x, tp_loc.y, veh_tf, ow, oh)
+            p2 = world_to_pixel(poly_edge_pt.x, poly_edge_pt.y, veh_tf, ow, oh)
+            cv2.line(img, p1, p2, (255, 255, 0), 2)
+            # Poly distance text at midpoint
+            mx = (p1[0] + p2[0]) // 2
+            my = (p1[1] + p2[1]) // 2
+            if poly_dist is not None:
+                cv2.putText(img, f"{poly_dist:.1f}m", (mx, my - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+
     # Distance text overlays
     if nozzle_mid is not None:
         npx, npy = world_to_pixel(nozzle_mid.x, nozzle_mid.y, veh_tf)
         cv2.putText(img, f"{edge_dist_r:.1f}m", (npx, npy),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
-    if tp_mid is not None:
-        tpx, tpy = world_to_pixel(tp_mid.x, tp_mid.y, veh_tf)
-        cv2.putText(img, f"{tp_edge_dist:.1f}m", (tpx, tpy),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
 
     drive_mode = "AUTO" if paint_ctrl.auto_drive else "MANUAL"
     perc_mode = "AI" if use_ai_mode else "GT"
@@ -747,13 +911,21 @@ def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
         img, paint_ctrl.painting_enabled,
         frame_count, speed, edge_dist_r,
         drive_mode, paint_ctrl.throttle, paint_ctrl.steer, paint_ctrl.brake,
-        tp_edge_dist, perc_mode, poly_dist
+        perc_mode, poly_dist, fps
     )
     cv2.imshow("Overhead View", img)
+    cv2.waitKey(1)
+    return img
 
 
 def _render_front_view(pg_screen, rgb_front, road_mask, scene,
-                       nozzle_mid, tp_mid, edge_dist_r, tp_edge_dist):
+                       nozzle_mid, edge_dist_r,
+                       right_world=None, driving_coords=None,
+                       poly_coeffs=None, veh_tf=None, use_ai=False,
+                       nozzle_raised=None, nozzle_edge_pt=None,
+                       right_px=None, poly_dist=None,
+                       driving_coords_gt=None, poly_edge_pt=None,
+                       tp_loc=None):
     """Render front camera view with mask overlay in pygame window."""
     if rgb_front is None:
         return
@@ -779,15 +951,88 @@ def _render_front_view(pg_screen, rgb_front, road_mask, scene,
                             (fpx, fpy), cv2.FONT_HERSHEY_SIMPLEX,
                             1.0, (0, 255, 0), 3)
 
-    if tp_mid is not None:
-        fp2 = world_to_front_pixel(
-            tp_mid.x, tp_mid.y, tp_mid.z, rgb_cam_tf)
-        if fp2 is not None:
-            fpx2, fpy2 = fp2
-            if 0 <= fpx2 < FRONT_CAM_W and 0 <= fpy2 < FRONT_CAM_H:
-                cv2.putText(front_display, f"{tp_edge_dist:.1f}m",
-                            (fpx2, fpy2), cv2.FONT_HERSHEY_SIMPLEX,
-                            1.0, (0, 255, 255), 3)
+    # --- 2D overlay: edge dots, path dots, poly curve (AI mode) ---
+    rgb_cam_tf = scene['rgb_front_cam'].get_transform()
+    if use_ai and veh_tf is not None:
+        # Red dots: right road edge (direct 2D pixels, no 3D round-trip)
+        if right_px:
+            for u, v in right_px:
+                if 0 <= u < FRONT_CAM_W and 0 <= v < FRONT_CAM_H:
+                    cv2.circle(front_display, (int(u), int(v)), 3, (0, 0, 255), -1)
+
+        # Blue dots: AI driving path
+        if driving_coords:
+            for i in range(0, len(driving_coords), 2):
+                pt = driving_coords[i]
+                px = pt.x if hasattr(pt, 'x') else pt[0]
+                py = pt.y if hasattr(pt, 'y') else pt[1]
+                z = veh_tf.location.z + 0.3
+                fp = world_to_front_pixel(px, py, z, rgb_cam_tf)
+                if fp and 0 <= fp[0] < FRONT_CAM_W and 0 <= fp[1] < FRONT_CAM_H:
+                    cv2.circle(front_display, fp, 4, (255, 0, 0), -1)
+
+        # Purple dots: GT reference path
+        if driving_coords_gt:
+            for i in range(0, len(driving_coords_gt), 2):
+                pt = driving_coords_gt[i]
+                px = pt.x if hasattr(pt, 'x') else pt[0]
+                py = pt.y if hasattr(pt, 'y') else pt[1]
+                z = veh_tf.location.z + 0.3
+                fp = world_to_front_pixel(px, py, z, rgb_cam_tf)
+                if fp and 0 <= fp[0] < FRONT_CAM_W and 0 <= fp[1] < FRONT_CAM_H:
+                    cv2.circle(front_display, fp, 4, (128, 0, 128), -1)
+
+        # Magenta curve: polynomial extrapolation
+        if poly_coeffs is not None and len(poly_coeffs) == 3:
+            fwd = veh_tf.get_forward_vector()
+            right = carla.Vector3D(-fwd.y, fwd.x, 0)
+            fwd_h = math.sqrt(fwd.x**2 + fwd.y**2)
+            if fwd_h > 1e-6:
+                poly_pts = []
+                for lon in np.linspace(0, 20, 40):
+                    lat = poly_coeffs[0]*lon**2 + poly_coeffs[1]*lon + poly_coeffs[2]
+                    wx = veh_tf.location.x + (fwd.x/fwd_h)*lon + right.x*lat
+                    wy = veh_tf.location.y + (fwd.y/fwd_h)*lon + right.y*lat
+                    wz = veh_tf.location.z + 0.3
+                    fp = world_to_front_pixel(wx, wy, wz, rgb_cam_tf)
+                    if fp and 0 <= fp[0] < FRONT_CAM_W and 0 <= fp[1] < FRONT_CAM_H:
+                        poly_pts.append(fp)
+                for i in range(len(poly_pts) - 1):
+                    cv2.line(front_display, poly_pts[i], poly_pts[i+1],
+                             (255, 0, 255), 2)
+
+    # --- 2D distance line segments (AI mode) ---
+    if use_ai and veh_tf is not None:
+        rgb_cam_tf = scene['rgb_front_cam'].get_transform()
+
+        # Green line: nozzle -> road edge
+        if nozzle_raised is not None and nozzle_edge_pt is not None:
+            fp_a = world_to_front_pixel(
+                nozzle_raised.x, nozzle_raised.y, nozzle_raised.z, rgb_cam_tf)
+            fp_b = world_to_front_pixel(
+                nozzle_edge_pt.x, nozzle_edge_pt.y, nozzle_edge_pt.z, rgb_cam_tf)
+            if fp_a and fp_b:
+                if (0 <= fp_a[0] < FRONT_CAM_W and 0 <= fp_a[1] < FRONT_CAM_H and
+                        0 <= fp_b[0] < FRONT_CAM_W and 0 <= fp_b[1] < FRONT_CAM_H):
+                    cv2.line(front_display, fp_a, fp_b, (0, 255, 0), 2)
+
+        # Cyan line: first TP -> poly-extrapolated edge (like V3)
+        if tp_loc is not None and poly_edge_pt is not None:
+            fp_a = world_to_front_pixel(
+                tp_loc.x, tp_loc.y, tp_loc.z, rgb_cam_tf)
+            fp_b = world_to_front_pixel(
+                poly_edge_pt.x, poly_edge_pt.y, poly_edge_pt.z, rgb_cam_tf)
+            if fp_a and fp_b:
+                if (0 <= fp_a[0] < FRONT_CAM_W and 0 <= fp_a[1] < FRONT_CAM_H and
+                        0 <= fp_b[0] < FRONT_CAM_W and 0 <= fp_b[1] < FRONT_CAM_H):
+                    cv2.line(front_display, fp_a, fp_b, (255, 255, 0), 2)
+                    # Poly distance text at midpoint
+                    mx = (fp_a[0] + fp_b[0]) // 2
+                    my = (fp_a[1] + fp_b[1]) // 2
+                    if poly_dist is not None:
+                        cv2.putText(front_display, f"{poly_dist:.1f}m",
+                                    (mx, my - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.7, (255, 255, 0), 2)
 
     # BGR -> RGB for pygame
     front_rgb = cv2.cvtColor(front_display, cv2.COLOR_BGR2RGB)
