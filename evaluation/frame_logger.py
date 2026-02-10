@@ -1,6 +1,6 @@
 """Per-frame CSV logger for paper-grade data recording.
 
-Records 27 columns of per-frame telemetry when eval_recording is active.
+Records 31 columns of per-frame telemetry when eval_recording is active.
 Output: evaluation/framelog_YYYYMMDD_HHMMSS.csv
 
 Usage:
@@ -25,6 +25,7 @@ COLUMNS = [
     'perception_mode', 'ai_edge_pts', 'gt_edge_pts', 'road_mask_ratio',
     'poly_coeff_a', 'poly_coeff_b', 'poly_coeff_c',
     'inference_time_ms',
+    'mask_iou', 'edge_dev_mean_px', 'edge_dev_median_px', 'edge_dev_max_px',
 ]
 
 

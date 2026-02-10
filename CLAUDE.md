@@ -32,7 +32,7 @@ diag_vllinet.py                         -- Standalone VLLiNet model verification
 carla_env/setup_scene_v2.py             -- Scene: 1248x384 cameras, position (1.5, 2.4)
 perception/road_segmentor_ai.py         -- VLLiNet wrapper, same segment() interface
 perception/road_segmentor.py            -- GT CityScapes segmentor (preserved)
-perception/perception_pipeline.py       -- AI/GT dual mode via use_ai flag
+perception/perception_pipeline.py       -- AI/GT dual mode via use_ai flag, 8-tuple return
 planning/vision_path_planner.py         -- + polynomial extrapolation (estimate_nozzle_edge_distance)
 ros_interface/autostripe_node.py        -- V4 ROS node (subscribes to CARLA-ROS Bridge)
 ros_interface/rviz_publisher.py         -- + poly curve marker publisher
@@ -107,17 +107,19 @@ to the ideal 3.0m and auto-start painting when stable. Three coordinated mechani
 ### V4.2 (PD Control + Evaluation Pipeline + Dashed Lines)
 
 V4.2 addresses V4.1's oscillation issues and adds quantitative evaluation,
-dashed line support, and paper-grade data recording. Key additions:
+dashed line support, paper-grade data recording, and perception accuracy metrics.
+Key additions:
 
 - PD controller: derivative term damps oscillation, replaces P-only offset control
 - Hysteresis state machine: separate enter/exit tolerances + grace frames prevent chatter
 - Evaluation pipeline: Map API ground truth comparison with CSV export (E key)
 - Dashed line mode: alternating paint/gap phases for lane dividers (D key)
-- Per-frame CSV logger: 27-column framelog during eval recording (FrameLogger)
+- Per-frame CSV logger: 31-column framelog during eval recording (FrameLogger)
+- Perception accuracy metrics: mask IoU + edge deviation (AI vs GT, per-frame)
 - Inference timing: VLLiNet forward pass timing with CUDA synchronize
 - Enhanced detail CSV: 8 columns (+ GT coords, along-track dist, curvature, in_range)
 - Road geometry: curvature and lane width functions in lane_planner
-- Enhanced visualization: timeseries plots, curvature-deviation scatter
+- Enhanced visualization: timeseries plots (8 subplots), curvature-deviation scatter
 
 ### V4.2 Key Changes from V4.1
 
@@ -127,14 +129,18 @@ dashed line support, and paper-grade data recording. Key additions:
 - Auto-paint: PAINTING state has 15 grace frames before downgrade
 - Dashed line: D key toggles SOLID/DASHED mode (3m paint / 3m gap)
 - Evaluation: E key toggles eval recording (start/stop), runs GT comparison on stop
-- Per-frame logger: FrameLogger records 27-column CSV during eval recording
+- Per-frame logger: FrameLogger records 31-column CSV during eval recording
 - Inference timing: road_segmentor_ai.py times forward pass, pipeline forwards last_inference_ms
+- Perception metrics: mask_iou (AI vs GT road mask IoU), edge_dev_{mean,median,max}_px
+- Perception pipeline: AI mode generates gt_road_mask via GT segmentor, returns 8-tuple
 - Detail CSV: 3 columns → 8 columns (+ gt_nearest_x/y, along_track_dist, local_curvature, in_range)
 - Road geometry: lane_planner.py adds compute_road_curvature() and get_lane_widths()
-- Visualization: timeseries plots (6 subplots), curvature-deviation scatter, backwards-compatible load_detail()
-- New file: evaluation/frame_logger.py (FrameLogger class, 27-col CSV)
+- Visualization: timeseries plots (6→8 subplots: +IoU, +edge deviation), curvature-deviation scatter, backwards-compatible
+- New file: evaluation/perception_metrics.py (compute_mask_iou, compute_edge_deviation)
+- New file: evaluation/frame_logger.py (FrameLogger class, 31-col CSV)
+- Modified: perception/perception_pipeline.py (gt_segmentor in AI mode, 8-tuple return)
 - Modified: evaluation/trajectory_evaluator.py (8-col detail, local curvatures, along-track dist)
-- Modified: evaluation/visualize_eval.py (timeseries, curvature scatter, framelog support)
+- Modified: evaluation/visualize_eval.py (8-panel timeseries, curvature scatter, framelog support)
 - HUD: line type indicator, dash progress, updated help text
 
 ### V4.2 Key Parameters
@@ -148,6 +154,10 @@ dashed line support, and paper-grade data recording. Key additions:
 - DASH_LENGTH: 3.0m (paint phase length)
 - GAP_LENGTH: 3.0m (gap phase length)
 - Evaluation coverage_threshold: 2.0m (GT point considered covered)
+- Perception metrics: computed per-frame in AI mode only (<2ms overhead)
+- mask_iou: AI road mask vs GT road mask, boolean intersection/union
+- edge_dev: per-row |u_ai - u_gt| for right edge, min 3 matched rows
+- Framelog perception columns: mask_iou, edge_dev_mean_px, edge_dev_median_px, edge_dev_max_px
 
 ### V3 (Manual Painting Control + Enhanced Visualization) — preserved
 
@@ -301,11 +311,12 @@ AutoStripe/
     models/vllinet.py         # VLLiNet_Lite model class
     models/backbone.py        # MobileNetV3 + LiDAREncoder
     checkpoints_carla/best_model.pth  # Trained checkpoint
-  evaluation/                 # V4.2 trajectory evaluation + data recording
+  evaluation/                 # V4.2 trajectory evaluation + perception metrics
     __init__.py
     trajectory_evaluator.py   # Map API GT comparison + 8-col detail CSV export
-    frame_logger.py           # Per-frame 27-column CSV recorder
-    visualize_eval.py         # Evaluation plots + timeseries + curvature scatter
+    perception_metrics.py     # Perception accuracy: mask IoU + edge deviation
+    frame_logger.py           # Per-frame 31-column CSV recorder
+    visualize_eval.py         # Evaluation plots + 8-panel timeseries + curvature scatter
   datasets/                   # (reserved)
   docs/
     Project_Design.md

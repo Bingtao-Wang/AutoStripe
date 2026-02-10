@@ -281,9 +281,12 @@ class TrajectoryEvaluator:
         last_pt = paint_pts[-1]
         gt_start = _carla.Location(x=first_pt[0], y=first_pt[1], z=0.0)
 
-        # 估算 paint trail 长度，动态生成足够的 GT 点
-        trail_length = math.sqrt(
-            (last_pt[0] - first_pt[0])**2 + (last_pt[1] - first_pt[1])**2)
+        # 计算沿轨迹累积距离（非直线距离，避免闭环时首尾重合导致长度≈0）
+        trail_length = 0.0
+        for i in range(1, len(paint_pts)):
+            dx = paint_pts[i][0] - paint_pts[i - 1][0]
+            dy = paint_pts[i][1] - paint_pts[i - 1][1]
+            trail_length += math.sqrt(dx * dx + dy * dy)
         # 多生成 20% 余量，确保覆盖
         needed_wps = max(self.num_waypoints,
                          int(trail_length / self.spacing * 1.2))

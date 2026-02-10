@@ -57,6 +57,7 @@ from control.marker_vehicle_v2 import MarkerVehicleV2
 from utils.video_recorder import VideoRecorder
 from evaluation.trajectory_evaluator import TrajectoryEvaluator
 from evaluation.frame_logger import FrameLogger
+from evaluation.perception_metrics import compute_mask_iou, compute_edge_deviation
 
 
 class AutoPaintStateMachine:
@@ -658,6 +659,7 @@ def main():
         PERCEPT_INTERVAL = 3  # run VLLiNet every N frames
         cached_result = None
         cached_road_mask = None
+        cached_gt_road_mask = None
 
         print("=" * 60)
         print("  System ready! Press SPACE to start painting")
@@ -701,6 +703,7 @@ def main():
                 )
                 cached_result = result
                 cached_road_mask = result[2]
+                cached_gt_road_mask = result[7] if len(result) > 7 else None
             else:
                 result = cached_result
 
@@ -708,6 +711,7 @@ def main():
             road_mask = cached_road_mask
             gt_right_world = result[5] if len(result) > 5 else None
             gt_right_px = result[6] if len(result) > 6 else None
+            gt_road_mask = cached_gt_road_mask
 
             # --- Planning: generate driving path (AI edges) ---
             veh_tf = vehicle.get_transform()
@@ -859,6 +863,19 @@ def main():
                 if poly_dist is not None:
                     _lat_err = (poly_dist - planner.nozzle_arm) - 3.0
 
+                # Perception accuracy metrics (AI mode only)
+                _mask_iou = 0.0
+                _edge_mean = -1.0
+                _edge_median = -1.0
+                _edge_max = -1.0
+                if use_ai_mode:
+                    _mask_iou = compute_mask_iou(road_mask, gt_road_mask)
+                    edge_dev = compute_edge_deviation(right_px, gt_right_px)
+                    if edge_dev is not None:
+                        _edge_mean = edge_dev['mean_px']
+                        _edge_median = edge_dev['median_px']
+                        _edge_max = edge_dev['max_px']
+
                 frame_logger.log_frame({
                     'timestamp': time.time(),
                     'frame': frame_count,
@@ -888,6 +905,10 @@ def main():
                     'poly_coeff_b': _pb,
                     'poly_coeff_c': _pc,
                     'inference_time_ms': perception.last_inference_ms if run_percept else -1.0,
+                    'mask_iou': _mask_iou,
+                    'edge_dev_mean_px': _edge_mean,
+                    'edge_dev_median_px': _edge_median,
+                    'edge_dev_max_px': _edge_max,
                 })
 
             # --- Render overhead view ---

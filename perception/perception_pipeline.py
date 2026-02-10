@@ -30,8 +30,10 @@ class PerceptionPipeline:
             from perception.road_segmentor_ai import RoadSegmentorAI
             self.segmentor = RoadSegmentorAI(
                 checkpoint_path=checkpoint_path)
+            self.gt_segmentor = RoadSegmentor()
         else:
             self.segmentor = RoadSegmentor()
+            self.gt_segmentor = None
 
         self.last_inference_ms = 0.0
         self.projector = DepthProjector(img_w, img_h, fov_deg)
@@ -49,8 +51,9 @@ class PerceptionPipeline:
             rgb_bgra: np.ndarray (H,W,4) from RGB camera (needed for AI mode).
 
         Returns:
-            left_world, right_world, road_mask, left_px, right_px
-            In AI mode, also returns gt_right_world, gt_right_px as 6th/7th elements.
+            8-tuple: (left_world, right_world, road_mask, left_px, right_px,
+                      gt_right_world, gt_right_px, gt_road_mask)
+            gt_road_mask is the GT CityScapes road mask (AI mode only, else None).
         """
         if self.use_ai:
             road_mask = self.segmentor.segment(rgb_bgra, depth_bgra)
@@ -76,8 +79,12 @@ class PerceptionPipeline:
             gt_right_world = self.projector.project_pixels(
                 gt_right_px, depth_m, camera_transform)
 
+            # GT road mask for IoU comparison
+            seg_input = cityscapes_bgra if cityscapes_bgra is not None else semantic_bgra
+            gt_road_mask = self.gt_segmentor.segment(seg_input)
+
             return (left_world, right_world, road_mask, left_px, right_px,
-                    gt_right_world, gt_right_px)
+                    gt_right_world, gt_right_px, gt_road_mask)
         else:
             left_px, right_px = extract_road_edges_semantic(
                 semantic_bgra, depth_m)
@@ -87,4 +94,4 @@ class PerceptionPipeline:
                 right_px, depth_m, camera_transform)
 
             return (left_world, right_world, road_mask, left_px, right_px,
-                    None, None)
+                    None, None, None)

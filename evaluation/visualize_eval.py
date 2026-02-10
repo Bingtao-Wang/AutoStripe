@@ -330,7 +330,9 @@ def load_framelog(path):
 
 
 def plot_timeseries(framelog_path):
-    """Generate 6-subplot timeseries figure from framelog CSV.
+    """Generate timeseries figure from framelog CSV.
+
+    6 subplots for legacy framelogs, 8 subplots when perception metrics exist.
 
     Subplots:
         1. nozzle_edge_dist + poly_edge_dist vs frame (with paint_state color band)
@@ -339,11 +341,17 @@ def plot_timeseries(framelog_path):
         4. speed vs frame
         5. lateral_error vs frame
         6. inference_time_ms vs frame
+        7. mask_iou vs frame (if available)
+        8. edge_dev_mean_px + edge_dev_max_px vs frame (if available)
     """
     data = load_framelog(framelog_path)
     frames = data['frame']
 
-    fig, axes = plt.subplots(6, 1, figsize=(14, 18), sharex=True)
+    has_perception = 'mask_iou' in data and 'edge_dev_mean_px' in data
+    n_panels = 8 if has_perception else 6
+    fig_h = 24 if has_perception else 18
+
+    fig, axes = plt.subplots(n_panels, 1, figsize=(14, fig_h), sharex=True)
     fig.suptitle(f"Timeseries: {os.path.basename(framelog_path)}",
                  fontsize=13, fontweight='bold')
 
@@ -404,9 +412,45 @@ def plot_timeseries(framelog_path):
         ax.plot(frames[valid_inf], inf_ms[valid_inf],
                 color='#9467bd', linewidth=1)
     ax.set_ylabel('Time (ms)')
-    ax.set_xlabel('Frame')
     ax.set_title('Inference Time')
     ax.grid(True, alpha=0.3)
+
+    # --- Panel 7 & 8: perception metrics (only if columns exist) ---
+    if has_perception:
+        # Panel 7: mask IoU
+        ax = axes[6]
+        iou = data['mask_iou']
+        valid_iou = iou >= 0
+        if np.any(valid_iou):
+            ax.plot(frames[valid_iou], iou[valid_iou],
+                    color='#1f77b4', linewidth=1, label='Mask IoU')
+            mean_iou = float(np.mean(iou[valid_iou]))
+            ax.axhline(mean_iou, color='gray', linestyle='--',
+                       linewidth=0.8, label=f'Mean: {mean_iou:.3f}')
+        ax.set_ylabel('IoU')
+        ax.set_title('Perception: Mask IoU (AI vs GT)')
+        ax.set_ylim(-0.05, 1.05)
+        ax.legend(fontsize=7, loc='lower right')
+        ax.grid(True, alpha=0.3)
+
+        # Panel 8: edge deviation
+        ax = axes[7]
+        edge_mean = data['edge_dev_mean_px']
+        edge_max = data['edge_dev_max_px']
+        valid_edge = edge_mean >= 0
+        if np.any(valid_edge):
+            ax.plot(frames[valid_edge], edge_mean[valid_edge],
+                    color='#ff7f0e', linewidth=1, label='Mean dev (px)')
+            ax.plot(frames[valid_edge], edge_max[valid_edge],
+                    color='#d62728', linewidth=1, alpha=0.6,
+                    label='Max dev (px)')
+        ax.set_ylabel('Deviation (px)')
+        ax.set_title('Perception: Right Edge Deviation (AI vs GT)')
+        ax.legend(fontsize=7, loc='upper right')
+        ax.grid(True, alpha=0.3)
+
+    # Set xlabel on the last panel
+    axes[-1].set_xlabel('Frame')
 
     plt.tight_layout()
     out_path = framelog_path.replace('.csv', '_timeseries.png')
