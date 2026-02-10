@@ -64,15 +64,15 @@ class VideoRecorder:
 
         os.makedirs(self.video_dir, exist_ok=True)
         timestamp = time.strftime('%Y%m%d_%H%M%S')
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
 
         self._front_size = front_size
         self._overhead_size = overhead_size
 
         front_path = os.path.join(
-            self.video_dir, f'front_{timestamp}.mp4')
+            self.video_dir, f'front_{timestamp}.avi')
         overhead_path = os.path.join(
-            self.video_dir, f'overhead_{timestamp}.mp4')
+            self.video_dir, f'overhead_{timestamp}.avi')
 
         self._writer_front = cv2.VideoWriter(
             front_path, fourcc, self.fps, front_size)
@@ -120,8 +120,10 @@ class VideoRecorder:
         """Queue an overhead view frame (BGR numpy array). Non-blocking."""
         if not self.recording or frame is None:
             return
+        import numpy as np
+        f = np.ascontiguousarray(frame[:, :, :3].copy())
         with self._lock:
-            self._queue.append(('overhead', frame.copy()))
+            self._queue.append(('overhead', f))
         self._event.set()
 
     def release(self):

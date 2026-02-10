@@ -171,66 +171,72 @@ class ManualPaintingControl:
 
 def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
                         drive_mode="AUTO", throttle=0.0, steer=0.0, brake=0.0,
-                        perception_mode="AI", poly_dist=None, fps=0.0):
+                        perception_mode="AI", poly_dist=None, fps=0.0,
+                        veh_x=0.0, veh_y=0.0, veh_yaw=0.0):
     """Draw status info on overhead image."""
     h, w = img.shape[:2]
 
     # Drive mode
     mode_text = f"MODE: {drive_mode}"
     mode_color = (0, 255, 255) if drive_mode == "AUTO" else (255, 0, 255)
-    cv2.putText(img, mode_text, (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.2, mode_color, 3)
+    cv2.putText(img, mode_text, (20, 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 2.0, mode_color, 4)
 
     # Perception mode
     perc_text = f"PERC: {perception_mode}"
     perc_color = (255, 0, 255) if perception_mode == "AI" else (0, 255, 0)
-    cv2.putText(img, perc_text, (350, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, perc_color, 3)
+    cv2.putText(img, perc_text, (500, 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.8, perc_color, 4)
 
     # FPS
     fps_color = (0, 255, 0) if fps >= 15 else (0, 255, 255) if fps >= 10 else (0, 0, 255)
-    cv2.putText(img, f"FPS: {fps:.0f}", (650, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, fps_color, 3)
+    cv2.putText(img, f"FPS: {fps:.0f}", (1000, 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.8, fps_color, 4)
+
+    # Vehicle coordinates (right side)
+    cv2.putText(img, f"x={veh_x:.1f}  y={veh_y:.1f}  yaw={veh_yaw:.1f}",
+                (w - 900, 120),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)
 
     # Paint status
     status_text = "PAINT: ON" if painting_enabled else "PAINT: OFF"
     status_color = (0, 255, 0) if painting_enabled else (0, 0, 255)
-    cv2.putText(img, status_text, (20, 85),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 3)
+    cv2.putText(img, status_text, (20, 120),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.8, status_color, 4)
 
     # Vehicle status
-    cv2.putText(img, f"Speed: {speed:.1f} m/s", (20, 125),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-    cv2.putText(img, f"Nozzle-Edge: {edge_dist_r:.1f}m", (20, 160),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+    cv2.putText(img, f"Speed: {speed:.1f} m/s", (20, 180),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)
+    cv2.putText(img, f"Nozzle-Edge: {edge_dist_r:.1f}m", (20, 240),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 255, 0), 4)
 
     # Polynomial distance
     if poly_dist is not None:
-        cv2.putText(img, f"Poly-Edge: {poly_dist:.1f}m", (20, 200),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 3)
+        cv2.putText(img, f"Poly-Edge: {poly_dist:.1f}m", (20, 305),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 0, 255), 4)
     else:
-        cv2.putText(img, "Poly-Edge: N/A", (20, 200),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (150, 150, 150), 2)
+        cv2.putText(img, "Poly-Edge: N/A", (20, 305),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.8, (150, 150, 150), 3)
 
     # Manual control status
     if drive_mode == "MANUAL":
-        cv2.putText(img, f"Throttle: {throttle:.2f}", (20, 240),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(img, f"Steer: {steer:.2f}", (20, 270),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(img, f"Brake: {brake:.2f}", (20, 300),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(img, f"Throttle: {throttle:.2f}", (20, 370),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 0), 3)
+        cv2.putText(img, f"Steer: {steer:.2f}", (20, 420),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 0), 3)
+        cv2.putText(img, f"Brake: {brake:.2f}", (20, 470),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 0), 3)
 
     # Help text
-    help_y = h - 150
+    help_y = h - 200
     cv2.putText(img, "Controls:", (20, help_y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-    cv2.putText(img, "TAB=Mode SPACE=Paint G=AI/GT", (20, help_y + 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-    cv2.putText(img, "WASD=Drive Q=Reverse X=Brake", (20, help_y + 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-    cv2.putText(img, "V=Camera ESC=Quit", (20, help_y + 75),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (200, 200, 200), 3)
+    cv2.putText(img, "TAB=Mode SPACE=Paint G=AI/GT", (20, help_y + 45),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
+    cv2.putText(img, "WASD=Drive Q=Reverse X=Brake", (20, help_y + 85),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
+    cv2.putText(img, "V=Camera ESC=Quit", (20, help_y + 125),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
 
     return img
 
@@ -384,12 +390,13 @@ def world_to_front_pixel(wx, wy, wz, cam_tf,
 # --- Spawn point presets (Town05 highway) ---
 SPAWN_POINTS = {
     1: {"x": 10,     "y": -210,   "z": 1.85, "yaw": 180,   "desc": "Highway straight (original)"},
-    2: {"x": 210.7,  "y": -11.3,  "z": 0.30, "yaw": -90.7, "desc": "East corridor southbound"},
-    3: {"x": 42.4,   "y": -187.0, "z": 0.30, "yaw": -0.2,  "desc": "Highway east eastbound (right)"},
-    4: {"x": 155.0,  "y": -5.7,   "z": 0.60, "yaw": -90.1, "desc": "East straight southbound"},
+    2: {"x": -247.1, "y": -32.3,  "z": 10.0, "yaw": 90.1,  "desc": ""},
+    3: {"x": 211.0,  "y": -13.6, "z": 0.50, "yaw": -91.2, "desc": ""},
+    4: {"x": 0.0,    "y": 208.8, "z": 9.00, "yaw": 0.0,   "desc": ""},
     5: {"x": 90.0,   "y": -190.0, "z": 0.50, "yaw": -0.2,  "desc": "Highway SP1 reverse into right curve"},
+    6: {"x": 94.6,   "y": -146.1, "z": 0.30, "yaw": 189.0, "desc": "Post-turn westbound (from SP4 right curve)"},
 }
-ACTIVE_SPAWN = 5  # <-- Change this to switch spawn point
+ACTIVE_SPAWN = 2  # <-- Change this to switch spawn point
 
 
 def main():
@@ -461,6 +468,8 @@ def main():
         POLY_SMOOTH_WINDOW = 10
         last_time = time.time()
         fps = 0.0
+        fps_history = []
+        FPS_SMOOTH_WINDOW = 30
         PERCEPT_INTERVAL = 3  # run VLLiNet every N frames
         cached_result = None
         cached_road_mask = None
@@ -475,7 +484,11 @@ def main():
             now = time.time()
             dt = now - last_time
             last_time = now
-            fps = 1.0 / dt if dt > 0 else 0.0
+            if dt > 0:
+                fps_history.append(1.0 / dt)
+                if len(fps_history) > FPS_SMOOTH_WINDOW:
+                    fps_history.pop(0)
+                fps = sum(fps_history) / len(fps_history)
 
             # --- Read sensor data ---
             with scene['_semantic_lock']:
@@ -911,7 +924,9 @@ def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
         img, paint_ctrl.painting_enabled,
         frame_count, speed, edge_dist_r,
         drive_mode, paint_ctrl.throttle, paint_ctrl.steer, paint_ctrl.brake,
-        perc_mode, poly_dist, fps
+        perc_mode, poly_dist, fps,
+        veh_x=veh_tf.location.x, veh_y=veh_tf.location.y,
+        veh_yaw=veh_tf.rotation.yaw
     )
     cv2.imshow("Overhead View", img)
     cv2.waitKey(1)

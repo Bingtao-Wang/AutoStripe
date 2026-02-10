@@ -471,21 +471,224 @@ while True:
 
 ---
 
-## 总结
+## 阶段 10: Overhead HUD 字体放大
+
+### 问题
+
+Overhead 俯视图上的状态文字（MODE、PAINT、距离等）字号偏小（0.6~1.2），在 1800x1600 的大画面上难以辨认。
+
+### 修改
+
+`draw_status_overlay()` 中所有 `cv2.putText` 的字号和粗细统一放大：
+
+| 元素 | 原字号 | 新字号 | 原粗细 | 新粗细 |
+|------|--------|--------|--------|--------|
+| MODE | 1.2 | 2.0 | 3 | 4 |
+| PERC / FPS | 1.0 | 1.8 | 3 | 4 |
+| PAINT | 1.0 | 1.8 | 3 | 4 |
+| Speed | 0.8 | 1.5 | 2 | 3 |
+| Nozzle-Edge / Poly-Edge | 1.0 | 1.8 | 3 | 4 |
+| Manual controls | 0.7 | 1.3 | 2 | 3 |
+| Help text | 0.6~0.7 | 1.0~1.2 | 1~2 | 2~3 |
+
+Y 坐标间距同步加大，避免文字重叠。
+
+### 结果
+
+Overhead 窗口文字清晰可读。
+
+---
+
+## 阶段 11: FPS 滑动平均
+
+### 问题
+
+FPS 显示在 ~4（VLLiNet 推理帧）和 ~30（缓存帧）之间剧烈跳动，因为 skip-frame 机制下每 3 帧只有 1 帧执行推理。瞬时 FPS（`1/dt`）无法反映真实平均帧率。
+
+### 修改
+
+将瞬时 FPS 改为 30 帧滑动平均：
+
+```python
+fps_history = []
+FPS_SMOOTH_WINDOW = 30
+
+# 每帧:
+if dt > 0:
+    fps_history.append(1.0 / dt)
+    if len(fps_history) > FPS_SMOOTH_WINDOW:
+        fps_history.pop(0)
+    fps = sum(fps_history) / len(fps_history)
+```
+
+### 结果
+
+FPS 显示稳定在 ~10（反映 skip-frame 后的真实平均帧率），不再跳动。
+
+---
+
+## 阶段 12: 视频录制格式修复（MP4 → AVI）
+
+### 问题
+
+CARLA 0.9.15 偶发段错误（exit code 139）时，MP4 文件损坏无法播放。原因是 MP4 格式需要在文件末尾写入 `moov atom`（索引信息），段错误导致进程被杀，索引未写入。
+
+**现象：**
+- Front 视频（1248x384，帧小）：偶尔幸存
+- Overhead 视频（1800x1600，帧大）：几乎必定损坏
+
+```
+[mov,mp4,m4a,3gp,3g2,mj2 @ 0x55c5f480ae00] moov atom not found
+Overhead: opened=False, frames=0
+Front: opened=True, frames=171
+```
+
+### 解决方案
+
+将视频格式从 MP4（mp4v 编码）改为 AVI（MJPEG 编码）：
+
+```python
+# 修改前
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+front_path = f'front_{timestamp}.mp4'
+
+# 修改后
+fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+front_path = f'front_{timestamp}.avi'
+```
+
+**AVI 优势：** AVI 容器不依赖尾部索引，每帧独立写入。即使进程崩溃，已写入的帧仍可正常播放。
+
+### 附加修复
+
+Overhead 帧写入前增加内存连续性保证：
+
+```python
+f = np.ascontiguousarray(frame[:, :, :3].copy())
+```
+
+### 验证
+
+段错误后检查 AVI 文件：
+
+```
+Overhead: opened=True, frames=248, w=1800, h=1600 ✓
+Front: opened=True, frames=249, w=1248, h=384 ✓
+```
+
+### 结果
+
+段错误后两路视频均完整可播放。
+
+---
+
+## 阶段 13: 出生点探索工具 + 多出生点测试
+
+### 问题
+
+V4 初期仅在 Spawn #4（x=155, y=-5.7, 南向直道）测试。需要在不同路段验证系统稳定性，但手动查找合适出生点效率低。
+
+### 解决方案
+
+创建轻量级出生点探索工具 `find_spawn.py`：
+
+- 手动 WASD 驾驶，无感知/喷涂模块
+- 实时 HUD 显示：x, y, z, yaw, speed, road_id, lane_id
+- 喷嘴到右路缘距离（Map API 计算，绿色 3D 线可视化）
+- **P 键**一键保存当前位置，输出可直接粘贴的 spawn dict 格式
+- 俯视相机 + spectator 跟随
+
+```python
+# P 键输出示例：
+  === Spawn Point #1 (Nozzle-Edge: 3.2m) ===
+  {"x": -247.1, "y": -32.3, "z": 9.96, "yaw": 90.1, "desc": ""},
+```
+
+### 喷嘴-路缘距离计算（Map API）
+
+```python
+def get_nozzle_edge_distance(carla_map, nozzle_loc, vehicle_tf):
+    wp = carla_map.get_waypoint(nozzle_loc)
+    # 用车辆朝向计算右方向（避免 waypoint yaw 方向不一致）
+    veh_yaw = math.radians(vehicle_tf.rotation.yaw)
+    right_x = -math.sin(veh_yaw)
+    right_y = math.cos(veh_yaw)
+    # 喷嘴相对车道中心的横向偏移
+    lat_offset = dx * right_x + dy * right_y
+    # 到右边缘距离 = 半车道宽 - 横向偏移
+    dist = half_width - lat_offset
+    return dist
+```
+
+### 踩坑：waypoint yaw 方向不一致
+
+初版用 waypoint 的 yaw 计算"右"方向，结果距离为负值（-3m）。原因是 CARLA 中 waypoint 的 forward 方向可能与车辆行驶方向不一致（取决于 lane_id 符号）。改用车辆自身 yaw 后修复。
+
+### 多出生点测试结果
+
+通过 `find_spawn.py` 在 Town05 全图手动驾驶，找到 3 个新出生点，加上原有 SP1，共 4 个主要测试点：
+
+| SP# | x | y | z | yaw | 路段描述 | 测试结果 |
+|-----|---|---|---|-----|----------|----------|
+| 1 | 10 | -210 | 1.85 | 180 | Highway 直道 | 稳定 |
+| 2 | -247.1 | -32.3 | 10.0 | 90.1 | 西侧北向 | 稳定，AI:12pts |
+| 3 | 211.0 | -13.6 | 0.50 | -91.2 | 东侧南向 | 稳定，AI:12pts |
+| 4 | 0.0 | 208.8 | 9.00 | 0.0 | 北侧东向 | 稳定，AI:12pts |
+
+**碰撞问题：** 部分出生点 z 值过低导致 `Spawn failed because of collision`，需手动抬高 z（如 -0.04 → 0.50，8.22 → 9.00）。
+
+### 结果
+
+4 个出生点均通过长时间运行测试（400~6650 帧），AI 感知稳定输出 12 个路径点。
+
+---
+
+## 阶段 14: Overhead 实时坐标显示
+
+### 问题
+
+寻找出生点时需要在 V4 主程序中查看当前车辆坐标，但 overhead HUD 没有坐标信息，需要切换到 `find_spawn.py` 才能看到。
+
+### 修改
+
+`draw_status_overlay()` 增加 `veh_x, veh_y, veh_yaw` 参数，在 overhead 右上角显示白色坐标文字：
+
+```python
+# 函数签名增加参数
+def draw_status_overlay(..., veh_x=0.0, veh_y=0.0, veh_yaw=0.0):
+
+# 右上角显示坐标
+cv2.putText(img, f"x={veh_x:.1f}  y={veh_y:.1f}  yaw={veh_yaw:.1f}",
+            (w - 900, 120),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)
+```
+
+调用处传入车辆 transform：
+
+```python
+img = draw_status_overlay(...,
+    veh_x=veh_tf.location.x, veh_y=veh_tf.location.y,
+    veh_yaw=veh_tf.rotation.yaw)
+```
+
+### 结果
+
+Overhead 窗口右上角实时显示 x, y, yaw，手动驾驶时可直接读取坐标用于出生点定位。
 
 ### V4 修改文件清单
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `manual_painting_control_v4.py` | 新增 | V4 主入口，AI/GT 切换 + 多项式 + 2D 叠加 + 录制 + skip-frame |
+| `manual_painting_control_v4.py` | 新增 | V4 主入口，AI/GT 切换 + 多项式 + 2D 叠加 + 录制 + skip-frame + HUD 放大 + 坐标显示 |
 | `diag_vllinet.py` | 新增 | VLLiNet 模型独立验证脚本 |
+| `find_spawn.py` | 新增 | 出生点探索工具（手动驾驶 + 实时坐标 + 喷嘴距离 + P 键保存） |
 | `perception/road_segmentor_ai.py` | 新增 | VLLiNet 封装，segment() 接口兼容 |
 | `perception/perception_pipeline.py` | 修改 | use_ai 双模式 + rgb_bgra 参数 + GT 参考边缘 |
 | `perception/edge_extractor.py` | 修改 | 新增 extract_road_edges_mask() 处理二值掩码 |
 | `planning/vision_path_planner.py` | 修改 | 新增 estimate_nozzle_edge_distance() 多项式外推 |
 | `carla_env/setup_scene_v2.py` | 修改 | 相机分辨率 1248x384，位置 z=3.5 pitch=-10 |
 | `utils/__init__.py` | 新增 | utils 包初始化 |
-| `utils/video_recorder.py` | 新增 | 后台线程双路视频录制 |
+| `utils/video_recorder.py` | 新增 | 后台线程双路视频录制（AVI+MJPEG 防崩溃损坏） |
 
 ### V4 关键技术突破
 
@@ -496,6 +699,9 @@ while True:
 5. **后台线程录制**：deque 队列 + Event 信号 + daemon 线程，编码不阻塞主循环
 6. **Skip-frame 推理**：每 3 帧运行一次 VLLiNet，有效 FPS 从 ~3 提升到 ~10
 7. **性能 profiling 方法论**：分段计时定位瓶颈（93% 在推理），避免盲目优化非关键路径
+8. **AVI 防崩溃录制**：MP4 段错误后 moov atom 丢失导致损坏，改用 AVI+MJPEG 格式，帧独立写入不依赖尾部索引
+9. **出生点探索工具**：轻量级手动驾驶 + P 键一键保存坐标，Map API 计算喷嘴-路缘距离辅助定位
+10. **FPS 滑动平均**：30 帧窗口消除 skip-frame 导致的瞬时 FPS 跳动
 
 ### V4 已知问题
 
