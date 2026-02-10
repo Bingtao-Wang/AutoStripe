@@ -8,6 +8,7 @@ Requires both RGB and depth images (unlike GT segmentor which only needs semanti
 
 import os
 import sys
+import time
 import numpy as np
 import cv2
 import torch
@@ -40,6 +41,7 @@ class RoadSegmentorAI:
             device if torch.cuda.is_available() else 'cpu')
         self.model_h = model_h
         self.model_w = model_w
+        self.last_inference_ms = 0.0
 
         # ImageNet normalization for RGB
         self.rgb_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -150,11 +152,15 @@ class RoadSegmentorAI:
     @torch.no_grad()
     def _infer(self, rgb_tensor, depth_tensor, orig_h, orig_w):
         """Run model and return uint8 mask at original resolution."""
+        t0 = time.time()
         if self.device.type == 'cuda':
             with torch.amp.autocast('cuda'):
                 output = self.model(rgb_tensor, depth_tensor, return_aux=False)
         else:
             output = self.model(rgb_tensor, depth_tensor, return_aux=False)
+        if self.device.type == 'cuda':
+            torch.cuda.synchronize()
+        self.last_inference_ms = (time.time() - t0) * 1000.0
 
         pred = torch.sigmoid(output)
         pred = F.interpolate(

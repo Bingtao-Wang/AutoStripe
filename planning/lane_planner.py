@@ -1,4 +1,5 @@
 import glob
+import math
 import os
 import sys
 
@@ -131,3 +132,53 @@ def compute_road_edges(waypoint_objects):
         right_edges.append(_compute_edge_position(rightmost, "right"))
 
     return left_edges, right_edges
+
+
+def compute_road_curvature(waypoint_objects):
+    """Compute discrete curvature at each waypoint from heading change rate.
+
+    Uses the difference in yaw between consecutive waypoints divided by
+    the arc-length between them: kappa = d_yaw / ds.
+
+    Args:
+        waypoint_objects: list of carla.Waypoint
+
+    Returns:
+        list[float] — curvature value per waypoint (first/last = neighbour value)
+    """
+    if len(waypoint_objects) < 3:
+        return [0.0] * len(waypoint_objects)
+
+    curvatures = []
+    for i in range(1, len(waypoint_objects) - 1):
+        p0 = waypoint_objects[i - 1].transform.location
+        p1 = waypoint_objects[i + 1].transform.location
+        ds = math.sqrt((p1.x - p0.x)**2 + (p1.y - p0.y)**2)
+
+        yaw0 = math.radians(waypoint_objects[i - 1].transform.rotation.yaw)
+        yaw1 = math.radians(waypoint_objects[i + 1].transform.rotation.yaw)
+        dyaw = yaw1 - yaw0
+        # Normalize to [-pi, pi]
+        dyaw = (dyaw + math.pi) % (2 * math.pi) - math.pi
+
+        if ds > 1e-6:
+            curvatures.append(abs(dyaw / ds))
+        else:
+            curvatures.append(0.0)
+
+    # Pad first and last with neighbour values
+    curvatures.insert(0, curvatures[0] if curvatures else 0.0)
+    curvatures.append(curvatures[-1] if curvatures else 0.0)
+    return curvatures
+
+
+def get_lane_widths(waypoint_objects):
+    """Get lane width at each waypoint.
+
+    Args:
+        waypoint_objects: list of carla.Waypoint
+
+    Returns:
+        list[float] — lane width in meters per waypoint
+    """
+    return [wp.lane_width for wp in waypoint_objects]

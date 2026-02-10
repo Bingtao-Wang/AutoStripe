@@ -33,6 +33,7 @@ class PerceptionPipeline:
         else:
             self.segmentor = RoadSegmentor()
 
+        self.last_inference_ms = 0.0
         self.projector = DepthProjector(img_w, img_h, fov_deg)
 
     def process_frame(self, semantic_bgra, depth_bgra, camera_transform,
@@ -53,9 +54,11 @@ class PerceptionPipeline:
         """
         if self.use_ai:
             road_mask = self.segmentor.segment(rgb_bgra, depth_bgra)
+            self.last_inference_ms = self.segmentor.last_inference_ms
         else:
             seg_input = cityscapes_bgra if cityscapes_bgra is not None else semantic_bgra
             road_mask = self.segmentor.segment(seg_input)
+            self.last_inference_ms = 0.0
 
         depth_m = decode_depth_image(depth_bgra)
 

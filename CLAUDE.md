@@ -104,6 +104,51 @@ to the ideal 3.0m and auto-start painting when stable. Three coordinated mechani
 - TARGET_NOZZLE_DIST: 3.0m (ideal painting distance)
 - Auto-paint tolerance: 0.3m, stability_frames: 60, min_speed: 1.0 m/s
 
+### V4.2 (PD Control + Evaluation Pipeline + Dashed Lines)
+
+V4.2 addresses V4.1's oscillation issues and adds quantitative evaluation,
+dashed line support, and paper-grade data recording. Key additions:
+
+- PD controller: derivative term damps oscillation, replaces P-only offset control
+- Hysteresis state machine: separate enter/exit tolerances + grace frames prevent chatter
+- Evaluation pipeline: Map API ground truth comparison with CSV export (E key)
+- Dashed line mode: alternating paint/gap phases for lane dividers (D key)
+- Per-frame CSV logger: 27-column framelog during eval recording (FrameLogger)
+- Inference timing: VLLiNet forward pass timing with CUDA synchronize
+- Enhanced detail CSV: 8 columns (+ GT coords, along-track dist, curvature, in_range)
+- Road geometry: curvature and lane width functions in lane_planner
+- Enhanced visualization: timeseries plots, curvature-deviation scatter
+
+### V4.2 Key Changes from V4.1
+
+- Control: P-controller → PD-controller (Kp=0.5, Kd=0.3)
+- OFFSET_SMOOTH: 0.08 → 0.12 (faster response with D-term damping)
+- Auto-paint: single tolerance → hysteresis (enter=0.3m, exit=0.45m)
+- Auto-paint: PAINTING state has 15 grace frames before downgrade
+- Dashed line: D key toggles SOLID/DASHED mode (3m paint / 3m gap)
+- Evaluation: E key toggles eval recording (start/stop), runs GT comparison on stop
+- Per-frame logger: FrameLogger records 27-column CSV during eval recording
+- Inference timing: road_segmentor_ai.py times forward pass, pipeline forwards last_inference_ms
+- Detail CSV: 3 columns → 8 columns (+ gt_nearest_x/y, along_track_dist, local_curvature, in_range)
+- Road geometry: lane_planner.py adds compute_road_curvature() and get_lane_widths()
+- Visualization: timeseries plots (6 subplots), curvature-deviation scatter, backwards-compatible load_detail()
+- New file: evaluation/frame_logger.py (FrameLogger class, 27-col CSV)
+- Modified: evaluation/trajectory_evaluator.py (8-col detail, local curvatures, along-track dist)
+- Modified: evaluation/visualize_eval.py (timeseries, curvature scatter, framelog support)
+- HUD: line type indicator, dash progress, updated help text
+
+### V4.2 Key Parameters
+
+- OFFSET_KP: 0.5 (reduced from 0.8, D-term compensates)
+- OFFSET_KD: 0.3 (derivative gain, damps error rate of change)
+- OFFSET_SMOOTH: 0.12 (faster low-pass with D-term damping)
+- tolerance_enter: 0.3m (entering STABILIZED from CONVERGING)
+- tolerance_exit: 0.45m (leaving STABILIZED/PAINTING, 1.5x wider)
+- GRACE_LIMIT: 15 frames (PAINTING tolerates brief excursions)
+- DASH_LENGTH: 3.0m (paint phase length)
+- GAP_LENGTH: 3.0m (gap phase length)
+- Evaluation coverage_threshold: 2.0m (GT point considered covered)
+
 ### V3 (Manual Painting Control + Enhanced Visualization) — preserved
 
 V3 builds on V2's vision perception pipeline, adding:
@@ -256,7 +301,11 @@ AutoStripe/
     models/vllinet.py         # VLLiNet_Lite model class
     models/backbone.py        # MobileNetV3 + LiDAREncoder
     checkpoints_carla/best_model.pth  # Trained checkpoint
-  evaluation/                 # (reserved)
+  evaluation/                 # V4.2 trajectory evaluation + data recording
+    __init__.py
+    trajectory_evaluator.py   # Map API GT comparison + 8-col detail CSV export
+    frame_logger.py           # Per-frame 27-column CSV recorder
+    visualize_eval.py         # Evaluation plots + timeseries + curvature scatter
   datasets/                   # (reserved)
   docs/
     Project_Design.md
@@ -310,6 +359,9 @@ roslaunch autostripe autostripe_v2.launch
 | SPACE | Toggle painting ON/OFF |
 | TAB | Toggle Auto/Manual drive mode |
 | G | Toggle AI/GT perception mode |
+| D | Toggle dashed/solid line mode (AUTO only) |
+| E | Toggle eval recording (start/stop + framelog + GT evaluation) |
+| R | Toggle video recording |
 | WASD/Arrows | Manual drive (throttle/steer/brake) |
 | Q | Toggle reverse mode |
 | V | Toggle spectator follow/free camera |
@@ -319,6 +371,5 @@ roslaunch autostripe autostripe_v2.launch
 ## Future Versions (not yet implemented)
 
 - V4+: Replace VLLiNet with real-world trained model (transfer from CARLA to real camera)
-- V4+: Dashed lane dividers, center lines, all-weather support
-- V4+: Full evaluation pipeline: compare V4 AI trajectory vs Map API ground truth
+- V4+: Center lines, all-weather support
 - V4+: Multi-lane support, obstacle avoidance

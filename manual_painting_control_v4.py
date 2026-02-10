@@ -30,7 +30,7 @@ import sys
 import time
 import math
 import pygame
-from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r
+from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r, K_e
 from pygame.locals import K_w, K_a, K_s, K_d, K_x, K_v
 from pygame.locals import K_UP, K_DOWN, K_LEFT, K_RIGHT
 
@@ -55,6 +55,8 @@ from perception.perception_pipeline import PerceptionPipeline
 from planning.vision_path_planner import VisionPathPlanner
 from control.marker_vehicle_v2 import MarkerVehicleV2
 from utils.video_recorder import VideoRecorder
+from evaluation.trajectory_evaluator import TrajectoryEvaluator
+from evaluation.frame_logger import FrameLogger
 
 
 class AutoPaintStateMachine:
@@ -62,49 +64,70 @@ class AutoPaintStateMachine:
 
     Automatically starts painting when nozzle-edge distance stabilizes
     near the target (3.0m). SPACE key acts as manual override.
+
+    V4.2: Hysteresis (enter/exit tolerances) + grace frames to prevent
+    frequent state transitions from momentary oscillations.
     """
 
     STATE_CONVERGING = "CONVERGING"
     STATE_STABILIZED = "STABILIZED"
     STATE_PAINTING = "PAINTING"
 
-    def __init__(self, target_dist=3.0, tolerance=0.3,
-                 stability_frames=60, min_speed=1.0):
+    GRACE_LIMIT = 15  # frames allowed outside tolerance before downgrade
+
+    def __init__(self, target_dist=3.0, tolerance_enter=0.3,
+                 tolerance_exit=0.45, stability_frames=60, min_speed=1.0):
         self.target_dist = target_dist
-        self.tolerance = tolerance
+        self.tolerance_enter = tolerance_enter   # tight: entering STABILIZED
+        self.tolerance_exit = tolerance_exit      # wide: leaving STABILIZED/PAINTING
         self.stability_frames = stability_frames
         self.min_speed = min_speed
 
         self.state = self.STATE_CONVERGING
         self._stable_count = 0
+        self._grace_count = 0
         self._manual_override = False
 
     def update(self, nozzle_edge_dist, speed):
         """Update state machine. Returns True if painting should be active."""
-        in_tolerance = abs(nozzle_edge_dist - self.target_dist) < self.tolerance
+        error = abs(nozzle_edge_dist - self.target_dist)
+        in_enter = error < self.tolerance_enter
+        in_exit = error < self.tolerance_exit
         speed_ok = speed > self.min_speed
 
         if self._manual_override:
             return True
 
         if self.state == self.STATE_CONVERGING:
-            if in_tolerance and speed_ok:
+            if in_enter and speed_ok:
                 self.state = self.STATE_STABILIZED
                 self._stable_count = 0
+                self._grace_count = 0
 
         elif self.state == self.STATE_STABILIZED:
-            if not in_tolerance or not speed_ok:
+            if not in_exit or not speed_ok:
                 self.state = self.STATE_CONVERGING
                 self._stable_count = 0
+                self._grace_count = 0
             else:
                 self._stable_count += 1
                 if self._stable_count >= self.stability_frames:
                     self.state = self.STATE_PAINTING
+                    self._grace_count = 0
 
         elif self.state == self.STATE_PAINTING:
-            if not in_tolerance or not speed_ok:
+            if not speed_ok:
                 self.state = self.STATE_CONVERGING
                 self._stable_count = 0
+                self._grace_count = 0
+            elif not in_exit:
+                self._grace_count += 1
+                if self._grace_count >= self.GRACE_LIMIT:
+                    self.state = self.STATE_CONVERGING
+                    self._stable_count = 0
+                    self._grace_count = 0
+            else:
+                self._grace_count = 0
 
         return self.state == self.STATE_PAINTING
 
@@ -114,6 +137,7 @@ class AutoPaintStateMachine:
         if not self._manual_override:
             self.state = self.STATE_CONVERGING
             self._stable_count = 0
+            self._grace_count = 0
 
     @property
     def progress(self):
@@ -156,20 +180,69 @@ class ManualPaintingControl:
         self.brake = 0.0
         self.reverse = False
 
+        # Dash mode state
+        self.dash_mode = False
+        self.DASH_LENGTH = 3.0   # meters of paint
+        self.GAP_LENGTH = 3.0    # meters of gap
+        self._dash_accum = 0.0   # accumulated distance in current phase
+        self._dash_painting = True  # True=paint phase, False=gap phase
+
     def toggle_painting(self):
         self.painting_enabled = not self.painting_enabled
+        # Reset dash accumulator on paint toggle
+        self._dash_accum = 0.0
+        self._dash_painting = True
         status = "ON" if self.painting_enabled else "OFF"
         print(f"\n{'='*50}")
         print(f"  Paint: {status}")
         print(f"{'='*50}\n")
         return self.painting_enabled
 
+    def toggle_dash_mode(self):
+        """D key: toggle dashed/solid line mode."""
+        self.dash_mode = not self.dash_mode
+        self._dash_accum = 0.0
+        self._dash_painting = True
+        mode = "DASHED" if self.dash_mode else "SOLID"
+        print(f"\n{'='*50}")
+        print(f"  Line: {mode} ({self.DASH_LENGTH:.0f}m/{self.GAP_LENGTH:.0f}m)")
+        print(f"{'='*50}\n")
+
     def paint_line(self, world, nozzle_loc):
         if not self.painting_enabled:
             self.last_nozzle_loc = None
             return
 
-        if self.last_nozzle_loc is not None:
+        if self.dash_mode and self.last_nozzle_loc is not None:
+            # Accumulate distance traveled
+            seg_dist = math.sqrt(
+                (nozzle_loc.x - self.last_nozzle_loc.x)**2 +
+                (nozzle_loc.y - self.last_nozzle_loc.y)**2)
+            self._dash_accum += seg_dist
+
+            # Check phase transition
+            threshold = self.DASH_LENGTH if self._dash_painting else self.GAP_LENGTH
+            if self._dash_accum >= threshold:
+                self._dash_accum -= threshold
+                self._dash_painting = not self._dash_painting
+                if not self._dash_painting:
+                    # Entering gap: insert None marker for trail discontinuity
+                    self.paint_trail.append(None)
+
+            if self._dash_painting:
+                # Paint phase: draw line segment
+                world.debug.draw_line(
+                    self.last_nozzle_loc, nozzle_loc,
+                    thickness=0.3,
+                    color=carla.Color(255, 255, 0),
+                    life_time=1000.0,
+                    persistent_lines=True
+                )
+                self.paint_trail.append((nozzle_loc.x, nozzle_loc.y))
+            # Gap phase: no drawing, just track position
+
+        elif self.last_nozzle_loc is not None:
+            # Solid mode: always draw
             world.debug.draw_line(
                 self.last_nozzle_loc, nozzle_loc,
                 thickness=0.3,
@@ -240,7 +313,11 @@ class ManualPaintingControl:
 def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
                         drive_mode="AUTO", throttle=0.0, steer=0.0, brake=0.0,
                         perception_mode="AI", poly_dist=None, fps=0.0,
-                        veh_x=0.0, veh_y=0.0, veh_yaw=0.0):
+                        veh_x=0.0, veh_y=0.0, veh_yaw=0.0,
+                        ap_state_str="", ap_color=(255,255,255),
+                        line_mode_str="", driving_offset=0.0,
+                        steer_filter=0.0, is_recording=False,
+                        eval_recording=False, spectator_follow=True):
     """Draw status info on overhead image."""
     h, w = img.shape[:2]
 
@@ -286,24 +363,51 @@ def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
         cv2.putText(img, "Poly-Edge: N/A", (20, 305),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.8, (150, 150, 150), 3)
 
+    # AutoPaint state
+    if ap_state_str:
+        # BGR color for cv2
+        ap_bgr = (ap_color[2], ap_color[1], ap_color[0])
+        cv2.putText(img, f"AutoPaint: {ap_state_str}", (20, 370),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, ap_bgr, 3)
+
+    # Line mode
+    if line_mode_str:
+        cv2.putText(img, f"Line: {line_mode_str}", (20, 425),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 200, 0), 3)
+
+    # Offset + SteerFilter
+    cv2.putText(img, f"Offset: {driving_offset:.1f}m  SF: {steer_filter:.2f}",
+                (20, 480), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (200, 200, 200), 3)
+
+    # Recording indicators (right side)
+    indicator_x = w - 400
+    if is_recording:
+        cv2.putText(img, "REC", (indicator_x, 180),
+                    cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 4)
+    if eval_recording:
+        cv2.putText(img, "EVAL REC", (indicator_x, 240),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 165, 255), 4)
+
+    # Camera mode
+    cam_str = "Cam: FOLLOW" if spectator_follow else "Cam: FREE"
+    cam_color = (255, 200, 0) if spectator_follow else (0, 150, 255)
+    cv2.putText(img, cam_str, (indicator_x, 300),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.3, cam_color, 3)
+
     # Manual control status
     if drive_mode == "MANUAL":
-        cv2.putText(img, f"Throttle: {throttle:.2f}", (20, 370),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 0), 3)
-        cv2.putText(img, f"Steer: {steer:.2f}", (20, 420),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 0), 3)
-        cv2.putText(img, f"Brake: {brake:.2f}", (20, 470),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 0), 3)
+        cv2.putText(img, f"Thr:{throttle:.2f} Str:{steer:.2f} Brk:{brake:.2f}",
+                    (20, 535), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 255, 255), 3)
 
     # Help text
     help_y = h - 200
     cv2.putText(img, "Controls:", (20, help_y),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, (200, 200, 200), 3)
-    cv2.putText(img, "TAB=Mode SPACE=Paint G=AI/GT", (20, help_y + 45),
+    cv2.putText(img, "TAB=Mode SPACE=Paint G=AI/GT R=Rec", (20, help_y + 45),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
-    cv2.putText(img, "WASD=Drive Q=Reverse X=Brake", (20, help_y + 85),
+    cv2.putText(img, "D=Dash E=EvalRec V=Cam WASD=Drive", (20, help_y + 85),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
-    cv2.putText(img, "V=Camera ESC=Quit", (20, help_y + 125),
+    cv2.putText(img, "Q=Reverse X=Brake ESC=Quit", (20, help_y + 125),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
 
     return img
@@ -520,8 +624,16 @@ def main():
 
         # 3b. Auto-paint state machine
         auto_paint = AutoPaintStateMachine(
-            target_dist=3.0, tolerance=0.3,
+            target_dist=3.0, tolerance_enter=0.3, tolerance_exit=0.45,
             stability_frames=60, min_speed=1.0)
+
+        # 3c. Trajectory evaluator (E key toggle: start/stop recording)
+        evaluator = TrajectoryEvaluator(scene['map'])
+        eval_recording = False
+        eval_trail_start_idx = 0
+
+        # 3d. Frame logger (records per-frame CSV during eval recording)
+        frame_logger = FrameLogger()
 
         # 4. Warm up sensors
         print("Warming up sensors (30 frames)...")
@@ -730,6 +842,54 @@ def main():
             # --- Painting (after distance computation) ---
             paint_ctrl.paint_line(world, nozzle_loc)
 
+            # --- Per-frame logging (only when eval_recording) ---
+            if eval_recording and frame_logger.active:
+                # Compute road_mask_ratio
+                _rmr = 0.0
+                if road_mask is not None:
+                    _rmr = float(np.count_nonzero(road_mask)) / max(1, road_mask.size)
+
+                # Poly coefficients
+                _pa = poly_coeffs[0] if poly_coeffs is not None else 0.0
+                _pb = poly_coeffs[1] if poly_coeffs is not None else 0.0
+                _pc = poly_coeffs[2] if poly_coeffs is not None else 0.0
+
+                # Lateral error for logging
+                _lat_err = 0.0
+                if poly_dist is not None:
+                    _lat_err = (poly_dist - planner.nozzle_arm) - 3.0
+
+                frame_logger.log_frame({
+                    'timestamp': time.time(),
+                    'frame': frame_count,
+                    'dt': dt,
+                    'veh_x': veh_tf.location.x,
+                    'veh_y': veh_tf.location.y,
+                    'veh_yaw': veh_tf.rotation.yaw,
+                    'speed': speed,
+                    'nozzle_x': nozzle_loc.x,
+                    'nozzle_y': nozzle_loc.y,
+                    'nozzle_edge_dist': edge_dist_r,
+                    'poly_edge_dist': poly_dist if poly_dist is not None else -1.0,
+                    'driving_offset': planner.driving_offset,
+                    'steer_filter': controller._effective_steer_filter,
+                    'steer_cmd': paint_ctrl.steer,
+                    'throttle_cmd': paint_ctrl.throttle,
+                    'brake_cmd': paint_ctrl.brake,
+                    'lateral_error': _lat_err,
+                    'paint_state': auto_paint.state,
+                    'painting_enabled': int(paint_ctrl.painting_enabled),
+                    'dash_phase': int(paint_ctrl._dash_painting) if paint_ctrl.dash_mode else -1,
+                    'perception_mode': 'AI' if use_ai_mode else 'GT',
+                    'ai_edge_pts': len(right_world) if right_world else 0,
+                    'gt_edge_pts': len(gt_right_world) if gt_right_world else 0,
+                    'road_mask_ratio': _rmr,
+                    'poly_coeff_a': _pa,
+                    'poly_coeff_b': _pb,
+                    'poly_coeff_c': _pc,
+                    'inference_time_ms': perception.last_inference_ms if run_percept else -1.0,
+                })
+
             # --- Render overhead view ---
             overhead_img = _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
                              edge_dist_r, nozzle_mid,
@@ -741,7 +901,13 @@ def main():
                              nozzle_edge_pt=nozzle_edge_pt,
                              driving_coords_gt=driving_coords_gt,
                              poly_edge_pt=poly_edge_pt,
-                             tp_loc=tp_loc, fps=fps)
+                             tp_loc=tp_loc, fps=fps,
+                             auto_paint=auto_paint,
+                             planner=planner,
+                             controller=controller,
+                             is_recording=recorder.is_recording,
+                             eval_recording=eval_recording,
+                             spectator_follow=spectator_follow)
 
             # --- Record overhead frame ---
             recorder.write_overhead(overhead_img)
@@ -790,6 +956,31 @@ def main():
                         print(f"\n{'='*50}")
                         print(f"  Perception: {mode_str}")
                         print(f"{'='*50}\n")
+                    elif event.key == K_e:
+                        if evaluator is None:
+                            print("  Evaluator not available.")
+                        elif not eval_recording:
+                            # 开始记录
+                            eval_recording = True
+                            eval_trail_start_idx = len(paint_ctrl.paint_trail)
+                            frame_logger.start()
+                            print(f"\n{'='*50}")
+                            print(f"  Eval: RECORDING started (idx={eval_trail_start_idx})")
+                            print(f"  Press E again to stop and evaluate")
+                            print(f"{'='*50}\n")
+                        else:
+                            # 停止记录，取这段 paint trail 评估
+                            eval_recording = False
+                            frame_logger.stop()
+                            segment = paint_ctrl.paint_trail[eval_trail_start_idx:]
+                            print(f"\n{'='*50}")
+                            print(f"  Eval: RECORDING stopped")
+                            print(f"{'='*50}")
+                            evaluator.run_evaluation(
+                                segment, vehicle.get_location())
+                    elif event.key == K_d and paint_ctrl.auto_drive:
+                        # D key: toggle dash mode (only in AUTO drive)
+                        paint_ctrl.toggle_dash_mode()
 
             if should_exit:
                 print("\nExiting...")
@@ -826,6 +1017,9 @@ def main():
                 ("Paint: ON" if paint_ctrl.painting_enabled else "Paint: OFF",
                  (0, 255, 0) if paint_ctrl.painting_enabled else (150, 150, 150)),
                 (f"AutoPaint: {ap_state_str}", ap_color),
+                (f"Line: {'DASH' if paint_ctrl.dash_mode else 'SOLID'}"
+                 + (f" ({paint_ctrl._dash_accum:.1f}m)" if paint_ctrl.dash_mode else ""),
+                 (0, 200, 255) if paint_ctrl.dash_mode else (200, 200, 200)),
                 (f"Speed: {speed:.1f} m/s", (255, 255, 255)),
                 (f"Nozzle-Edge: {edge_dist_r:.1f}m", (0, 255, 0)),
                 (f"Poly-Edge: {poly_dist:.1f}m" if poly_dist else "Poly-Edge: N/A",
@@ -836,10 +1030,12 @@ def main():
                  (255, 255, 255)),
                 ("REC" if recorder.is_recording else "",
                  (255, 0, 0)),
+                ("EVAL REC" if eval_recording else "",
+                 (255, 165, 0)),
                 ("Cam: FOLLOW" if spectator_follow else "Cam: FREE",
                  (0, 200, 255) if spectator_follow else (255, 150, 0)),
                 ("TAB=Mode SPACE=Paint G=AI/GT R=Rec", (200, 200, 200)),
-                ("V=Cam WASD=Drive X=Brake ESC=Quit", (200, 200, 200)),
+                ("D=Dash E=EvalRec V=Cam WASD=Drive ESC=Quit", (200, 200, 200)),
             ]
             for i, (text, color) in enumerate(lines):
                 if text:
@@ -878,6 +1074,7 @@ def main():
 
     finally:
         print("\nCleaning up...")
+        frame_logger.stop()
         recorder.release()
         pygame.quit()
         cv2.destroyAllWindows()
@@ -937,7 +1134,10 @@ def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
                      right_world=None, driving_coords=None,
                      poly_coeffs=None, nozzle_raised=None,
                      nozzle_edge_pt=None, driving_coords_gt=None,
-                     poly_edge_pt=None, tp_loc=None, fps=0.0):
+                     poly_edge_pt=None, tp_loc=None, fps=0.0,
+                     auto_paint=None, planner=None, controller=None,
+                     is_recording=False, eval_recording=False,
+                     spectator_follow=True):
     """Render overhead view with overlays."""
     if overhead_data is None:
         return
@@ -1033,13 +1233,47 @@ def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
 
     drive_mode = "AUTO" if paint_ctrl.auto_drive else "MANUAL"
     perc_mode = "AI" if use_ai_mode else "GT"
+
+    # AutoPaint state string + color (RGB for draw_status_overlay)
+    ap_state_str = ""
+    ap_color = (255, 255, 255)
+    if auto_paint is not None:
+        if auto_paint._manual_override:
+            ap_state_str = "MANUAL"
+            ap_color = (255, 255, 0)
+        elif auto_paint.state == AutoPaintStateMachine.STATE_PAINTING:
+            ap_state_str = "PAINTING"
+            ap_color = (0, 255, 0)
+        elif auto_paint.state == AutoPaintStateMachine.STATE_STABILIZED:
+            pct = int(auto_paint.progress * 100)
+            ap_state_str = f"STABLE {pct}%"
+            ap_color = (0, 200, 255)
+        else:
+            ap_state_str = "CONVERGING"
+            ap_color = (255, 100, 100)
+
+    # Line mode string
+    line_mode_str = ""
+    if paint_ctrl.dash_mode:
+        line_mode_str = f"DASH ({paint_ctrl._dash_accum:.1f}m)"
+    else:
+        line_mode_str = "SOLID"
+
+    # Offset + steer filter
+    d_offset = planner.driving_offset if planner else 5.0
+    sf = controller._effective_steer_filter if controller else 0.15
+
     img = draw_status_overlay(
         img, paint_ctrl.painting_enabled,
         frame_count, speed, edge_dist_r,
         drive_mode, paint_ctrl.throttle, paint_ctrl.steer, paint_ctrl.brake,
         perc_mode, poly_dist, fps,
         veh_x=veh_tf.location.x, veh_y=veh_tf.location.y,
-        veh_yaw=veh_tf.rotation.yaw
+        veh_yaw=veh_tf.rotation.yaw,
+        ap_state_str=ap_state_str, ap_color=ap_color,
+        line_mode_str=line_mode_str, driving_offset=d_offset,
+        steer_filter=sf, is_recording=is_recording,
+        eval_recording=eval_recording, spectator_follow=spectator_follow
     )
     cv2.imshow("Overhead View", img)
     cv2.waitKey(1)

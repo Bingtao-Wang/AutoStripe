@@ -53,12 +53,17 @@ class VisionPathPlanner:
         self.max_range = max_range
         self.memory_frames = memory_frames
 
-        # Dynamic offset P-controller parameters
-        self.OFFSET_KP = 0.8
+        # Dynamic offset PD-controller parameters
+        self.OFFSET_KP = 0.5              # P gain (reduced from 0.8, D compensates)
+        self.OFFSET_KD = 0.3              # D gain (damps error rate of change)
         self.OFFSET_MAX_CORRECTION = 2.0   # max +2.0m -> 7.0m total
         self.OFFSET_MIN_CORRECTION = -1.0  # min -1.0m -> 4.0m total
         self.TARGET_NOZZLE_DIST = 3.0      # ideal painting distance
-        self.OFFSET_SMOOTH = 0.08          # low-pass filter rate for offset changes
+        self.OFFSET_SMOOTH = 0.12          # low-pass filter rate (faster with D damping)
+
+        # PD controller state
+        self._prev_error = 0.0
+        self._prev_error_valid = False
 
         # Accumulated path buffers (kept in sync)
         self.driving_coords = []   # list of (x, y)
@@ -70,13 +75,23 @@ class VisionPathPlanner:
         self._memory_counter = 0
 
     def set_dynamic_offset(self, nozzle_edge_dist):
-        """Adjust driving_offset via P-controller with low-pass smoothing.
+        """Adjust driving_offset via PD-controller with low-pass smoothing.
 
-        offset_target = base + Kp * (target - actual)
+        correction = Kp * error + Kd * d_error
+        offset_target = base + clamp(correction)
         offset = smooth * offset_target + (1 - smooth) * offset_prev
         """
         error = self.TARGET_NOZZLE_DIST - nozzle_edge_dist
-        correction = self.OFFSET_KP * error
+
+        # Derivative term (zero on first frame)
+        if self._prev_error_valid:
+            d_error = error - self._prev_error
+        else:
+            d_error = 0.0
+            self._prev_error_valid = True
+        self._prev_error = error
+
+        correction = self.OFFSET_KP * error + self.OFFSET_KD * d_error
         correction = max(self.OFFSET_MIN_CORRECTION,
                          min(self.OFFSET_MAX_CORRECTION, correction))
         target_offset = self._base_driving_offset + correction
