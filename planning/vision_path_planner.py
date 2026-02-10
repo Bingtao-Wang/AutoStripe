@@ -46,11 +46,19 @@ class VisionPathPlanner:
         self.nozzle_arm = nozzle_arm
         self.line_offset = line_offset
         self.driving_offset = line_offset + nozzle_arm
+        self._base_driving_offset = self.driving_offset
         self.smooth_window = smooth_window
         self.min_point_spacing = min_point_spacing
         self.max_buffer_size = max_buffer_size
         self.max_range = max_range
         self.memory_frames = memory_frames
+
+        # Dynamic offset P-controller parameters
+        self.OFFSET_KP = 0.8
+        self.OFFSET_MAX_CORRECTION = 2.0   # max +2.0m -> 7.0m total
+        self.OFFSET_MIN_CORRECTION = -1.0  # min -1.0m -> 4.0m total
+        self.TARGET_NOZZLE_DIST = 3.0      # ideal painting distance
+        self.OFFSET_SMOOTH = 0.08          # low-pass filter rate for offset changes
 
         # Accumulated path buffers (kept in sync)
         self.driving_coords = []   # list of (x, y)
@@ -60,6 +68,20 @@ class VisionPathPlanner:
         self._last_valid_driving = []
         self._last_valid_nozzle = []
         self._memory_counter = 0
+
+    def set_dynamic_offset(self, nozzle_edge_dist):
+        """Adjust driving_offset via P-controller with low-pass smoothing.
+
+        offset_target = base + Kp * (target - actual)
+        offset = smooth * offset_target + (1 - smooth) * offset_prev
+        """
+        error = self.TARGET_NOZZLE_DIST - nozzle_edge_dist
+        correction = self.OFFSET_KP * error
+        correction = max(self.OFFSET_MIN_CORRECTION,
+                         min(self.OFFSET_MAX_CORRECTION, correction))
+        target_offset = self._base_driving_offset + correction
+        self.driving_offset = (self.OFFSET_SMOOTH * target_offset
+                               + (1.0 - self.OFFSET_SMOOTH) * self.driving_offset)
 
     def update(self, right_edges, vehicle_transform):
         """Process one frame of right road edge and generate driving path.

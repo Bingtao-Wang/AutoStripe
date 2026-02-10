@@ -57,6 +57,74 @@ from control.marker_vehicle_v2 import MarkerVehicleV2
 from utils.video_recorder import VideoRecorder
 
 
+class AutoPaintStateMachine:
+    """Auto-paint state machine: CONVERGING -> STABILIZED -> PAINTING.
+
+    Automatically starts painting when nozzle-edge distance stabilizes
+    near the target (3.0m). SPACE key acts as manual override.
+    """
+
+    STATE_CONVERGING = "CONVERGING"
+    STATE_STABILIZED = "STABILIZED"
+    STATE_PAINTING = "PAINTING"
+
+    def __init__(self, target_dist=3.0, tolerance=0.3,
+                 stability_frames=60, min_speed=1.0):
+        self.target_dist = target_dist
+        self.tolerance = tolerance
+        self.stability_frames = stability_frames
+        self.min_speed = min_speed
+
+        self.state = self.STATE_CONVERGING
+        self._stable_count = 0
+        self._manual_override = False
+
+    def update(self, nozzle_edge_dist, speed):
+        """Update state machine. Returns True if painting should be active."""
+        in_tolerance = abs(nozzle_edge_dist - self.target_dist) < self.tolerance
+        speed_ok = speed > self.min_speed
+
+        if self._manual_override:
+            return True
+
+        if self.state == self.STATE_CONVERGING:
+            if in_tolerance and speed_ok:
+                self.state = self.STATE_STABILIZED
+                self._stable_count = 0
+
+        elif self.state == self.STATE_STABILIZED:
+            if not in_tolerance or not speed_ok:
+                self.state = self.STATE_CONVERGING
+                self._stable_count = 0
+            else:
+                self._stable_count += 1
+                if self._stable_count >= self.stability_frames:
+                    self.state = self.STATE_PAINTING
+
+        elif self.state == self.STATE_PAINTING:
+            if not in_tolerance or not speed_ok:
+                self.state = self.STATE_CONVERGING
+                self._stable_count = 0
+
+        return self.state == self.STATE_PAINTING
+
+    def manual_toggle(self):
+        """SPACE key: toggle manual override, reset state machine."""
+        self._manual_override = not self._manual_override
+        if not self._manual_override:
+            self.state = self.STATE_CONVERGING
+            self._stable_count = 0
+
+    @property
+    def progress(self):
+        """Return stabilization progress 0.0-1.0 for HUD."""
+        if self.state == self.STATE_STABILIZED:
+            return min(1.0, self._stable_count / self.stability_frames)
+        elif self.state == self.STATE_PAINTING:
+            return 1.0
+        return 0.0
+
+
 def get_nozzle_position(vehicle, offset=2.0):
     """Compute nozzle position: vehicle position + right-side offset (V1 logic)."""
     veh_tf = vehicle.get_transform()
@@ -450,6 +518,11 @@ def main():
         # 3. Initialize painting controller
         paint_ctrl = ManualPaintingControl(vehicle)
 
+        # 3b. Auto-paint state machine
+        auto_paint = AutoPaintStateMachine(
+            target_dist=3.0, tolerance=0.3,
+            stability_frames=60, min_speed=1.0)
+
         # 4. Warm up sensors
         print("Warming up sensors (30 frames)...")
         for _ in range(30):
@@ -526,6 +599,13 @@ def main():
 
             # --- Planning: generate driving path (AI edges) ---
             veh_tf = vehicle.get_transform()
+
+            # Dynamic offset: adjust driving_offset before path generation
+            # poly_dist is vehicle-center-to-edge; subtract nozzle_arm to get nozzle-to-edge
+            if poly_dist is not None:
+                nozzle_dist_est = poly_dist - planner.nozzle_arm
+                planner.set_dynamic_offset(nozzle_dist_est)
+
             driving_coords, _ = planner.update(right_world, veh_tf)
 
             # --- Planning: GT reference path ---
@@ -552,14 +632,17 @@ def main():
 
             # --- Control ---
             if paint_ctrl.auto_drive:
+                # Adaptive steer filter based on nozzle-edge error
+                if poly_dist is not None:
+                    lateral_error = (poly_dist - planner.nozzle_arm) - 3.0
+                    controller.set_lateral_error(lateral_error)
                 controller.update_path(driving_coords)
                 controller.step()
             else:
                 paint_ctrl.apply_manual_control()
 
-            # --- Painting ---
+            # --- Nozzle position (painting deferred until after distance computation) ---
             nozzle_loc = get_nozzle_position(vehicle)
-            paint_ctrl.paint_line(world, nozzle_loc)
 
             # --- Visualize: driving path + poly curve (skip in AI mode) ---
             if not use_ai_mode:
@@ -634,6 +717,19 @@ def main():
                     y=tp_wy + lat_at_tp * right_y,
                     z=tp_z)
 
+            # --- Auto-paint state machine ---
+            # Convert poly_dist (vehicle-center-to-edge) to nozzle-to-edge
+            if poly_dist is not None:
+                dist_for_sm = poly_dist - planner.nozzle_arm
+            else:
+                dist_for_sm = edge_dist_r
+            should_paint = auto_paint.update(dist_for_sm, speed)
+            if paint_ctrl.auto_drive and not auto_paint._manual_override:
+                paint_ctrl.painting_enabled = should_paint
+
+            # --- Painting (after distance computation) ---
+            paint_ctrl.paint_line(world, nozzle_loc)
+
             # --- Render overhead view ---
             overhead_img = _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
                              edge_dist_r, nozzle_mid,
@@ -670,6 +766,7 @@ def main():
                     if event.key == K_ESCAPE:
                         should_exit = True
                     elif event.key == K_SPACE:
+                        auto_paint.manual_toggle()
                         paint_ctrl.toggle_painting()
                     elif event.key == K_TAB:
                         paint_ctrl.toggle_drive_mode()
@@ -705,6 +802,20 @@ def main():
 
             # --- Pygame HUD overlay ---
             perc_mode = "AI" if use_ai_mode else "GT"
+            ap_state = auto_paint.state
+            if auto_paint._manual_override:
+                ap_state_str = "MANUAL"
+                ap_color = (255, 255, 0)
+            elif ap_state == AutoPaintStateMachine.STATE_PAINTING:
+                ap_state_str = "PAINTING"
+                ap_color = (0, 255, 0)
+            elif ap_state == AutoPaintStateMachine.STATE_STABILIZED:
+                pct = int(auto_paint.progress * 100)
+                ap_state_str = f"STABLE {pct}%"
+                ap_color = (0, 200, 255)
+            else:
+                ap_state_str = "CONVERGING"
+                ap_color = (255, 100, 100)
             lines = [
                 ("Drive: AUTO" if paint_ctrl.auto_drive else "Drive: MANUAL",
                  (0, 255, 0) if paint_ctrl.auto_drive else (255, 255, 0)),
@@ -714,15 +825,15 @@ def main():
                  (0, 255, 0) if fps >= 15 else (0, 255, 255) if fps >= 10 else (255, 0, 0)),
                 ("Paint: ON" if paint_ctrl.painting_enabled else "Paint: OFF",
                  (0, 255, 0) if paint_ctrl.painting_enabled else (150, 150, 150)),
-                ("Reverse: ON" if paint_ctrl.reverse else "",
-                 (255, 100, 100)),
+                (f"AutoPaint: {ap_state_str}", ap_color),
                 (f"Speed: {speed:.1f} m/s", (255, 255, 255)),
                 (f"Nozzle-Edge: {edge_dist_r:.1f}m", (0, 255, 0)),
                 (f"Poly-Edge: {poly_dist:.1f}m" if poly_dist else "Poly-Edge: N/A",
                  (255, 0, 255)),
+                (f"Offset: {planner.driving_offset:.1f}m  SteerF: {controller._effective_steer_filter:.2f}",
+                 (200, 200, 200)),
                 (f"Thr:{paint_ctrl.throttle:.1f} Str:{paint_ctrl.steer:.2f} Brk:{paint_ctrl.brake:.1f}",
                  (255, 255, 255)),
-                ("", (0, 0, 0)),
                 ("REC" if recorder.is_recording else "",
                  (255, 0, 0)),
                 ("Cam: FOLLOW" if spectator_follow else "Cam: FREE",
@@ -750,9 +861,11 @@ def main():
                 status = "ON" if paint_ctrl.painting_enabled else "OFF"
                 poly_d = f"{poly_dist:.1f}" if poly_dist else "N/A"
                 gt_pts = len(driving_coords_gt) if driving_coords_gt else 0
-                print(f"[F{frame_count}] Paint:{status} Perc:{perc_mode} "
-                      f"Spd:{speed:.1f} Noz:{edge_dist_r:.1f}m "
-                      f"Poly:{poly_d}m "
+                print(f"[F{frame_count}] Paint:{status} AP:{ap_state_str} "
+                      f"Perc:{perc_mode} Spd:{speed:.1f} "
+                      f"Noz:{edge_dist_r:.1f}m Poly:{poly_d}m "
+                      f"Off:{planner.driving_offset:.1f} "
+                      f"SF:{controller._effective_steer_filter:.2f} "
                       f"AI:{len(driving_coords)}pts GT:{gt_pts}pts")
 
     except KeyboardInterrupt:

@@ -30,6 +30,8 @@ class MarkerVehicleV2:
     LOOKAHEAD_WPS = 8
     SEARCH_WINDOW = 30
     STEER_FILTER = 0.15
+    STEER_FILTER_AGGRESSIVE = 0.50
+    STEER_FILTER_SMOOTH = 0.15
     MIN_PATH_POINTS = 5
     TARGET_SPEED = 3.0    # m/s target cruising speed
     MIN_THROTTLE = 0.2
@@ -48,6 +50,26 @@ class MarkerVehicleV2:
         self._alpha_prev = 0.0
         self._nearest_index = 0
         self._steer_prev = 0.0
+        self._effective_steer_filter = self.STEER_FILTER_SMOOTH
+
+    def set_lateral_error(self, error_m):
+        """Adapt steer filter based on lateral error magnitude.
+
+        |error| > 0.5m -> aggressive (0.50)
+        |error| < 0.3m -> smooth (0.15)
+        Linear interpolation between 0.3m and 0.5m.
+        """
+        err = abs(error_m)
+        if err >= 0.5:
+            self._effective_steer_filter = self.STEER_FILTER_AGGRESSIVE
+        elif err <= 0.3:
+            self._effective_steer_filter = self.STEER_FILTER_SMOOTH
+        else:
+            t = (err - 0.3) / (0.5 - 0.3)
+            self._effective_steer_filter = (
+                self.STEER_FILTER_SMOOTH
+                + t * (self.STEER_FILTER_AGGRESSIVE - self.STEER_FILTER_SMOOTH)
+            )
 
     def update_path(self, new_coords):
         """Receive new path points from the vision planner.
@@ -133,8 +155,8 @@ class MarkerVehicleV2:
         delta = math.atan2(2 * self.L * np.sin(alpha), ld)
         steer_raw = float(np.clip(delta, -1.0, 1.0))
 
-        steer = (self.STEER_FILTER * steer_raw
-                 + (1.0 - self.STEER_FILTER) * self._steer_prev)
+        steer = (self._effective_steer_filter * steer_raw
+                 + (1.0 - self._effective_steer_filter) * self._steer_prev)
         self._steer_prev = steer
 
         self.control.steer = steer

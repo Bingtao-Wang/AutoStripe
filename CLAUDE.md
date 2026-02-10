@@ -73,6 +73,37 @@ GT mode (G key toggle): falls back to V3 CityScapes pipeline.
 - Front cameras: x=1.5, z=2.4, pitch=-15, 1248x384, FOV=90
 - All other parameters same as V3
 
+### V4.1 (Control Algorithm Optimization)
+
+V4.1 adds closed-loop control to automatically converge nozzle-edge distance
+to the ideal 3.0m and auto-start painting when stable. Three coordinated mechanisms:
+
+- Adaptive steer filter: aggressive (0.50) when lateral error > 0.5m, smooth (0.15) when < 0.3m
+- Dynamic driving offset: P-controller adjusts driving_offset with low-pass smoothing
+- Auto-paint state machine: CONVERGING → STABILIZED (60 frames) → PAINTING
+
+### V4.1 Key Changes from V4
+
+- Control: fixed STEER_FILTER → adaptive via set_lateral_error() (0.15–0.50 linear interp)
+- Planning: fixed driving_offset=5.0 → dynamic via set_dynamic_offset() P-controller
+- Dynamic offset: Kp=0.8, low-pass OFFSET_SMOOTH=0.08, correction range [-1.0, +2.0]m
+- Auto-paint: AutoPaintStateMachine class (CONVERGING/STABILIZED/PAINTING)
+- Auto-paint conditions: |nozzle_dist - 3.0| < 0.3m, speed > 1.0 m/s, stable 60 frames
+- SPACE key: manual override (bypasses state machine)
+- HUD: AutoPaint state indicator, driving offset value, steer filter value
+- Bug fix: poly_dist is vehicle-center-to-edge, subtract nozzle_arm for nozzle-to-edge
+
+### V4.1 Key Parameters
+
+- OFFSET_KP: 0.8 (P-controller gain)
+- OFFSET_SMOOTH: 0.08 (low-pass filter rate for offset changes)
+- OFFSET_MAX_CORRECTION: +2.0m (cap at 7.0m total offset)
+- OFFSET_MIN_CORRECTION: -1.0m (floor at 4.0m total offset)
+- STEER_FILTER_AGGRESSIVE: 0.50 (large error)
+- STEER_FILTER_SMOOTH: 0.15 (small error, same as V4)
+- TARGET_NOZZLE_DIST: 3.0m (ideal painting distance)
+- Auto-paint tolerance: 0.3m, stability_frames: 60, min_speed: 1.0 m/s
+
 ### V3 (Manual Painting Control + Enhanced Visualization) — preserved
 
 V3 builds on V2's vision perception pipeline, adding:
