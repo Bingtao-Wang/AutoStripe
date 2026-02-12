@@ -13,7 +13,86 @@ Full design: `docs/Project_Design.md`
 - Map: Town05 (highway segment)
 - Vehicle: `vehicle.*stl*`, spawn at (10, -210, 1.85, yaw=180)
 
-## Current Version: V4 (VLLiNet AI Perception + Polynomial Extrapolation)
+## Current Version: V5 (LUNA-Net + Triple Perception Mode)
+
+V5 integrates LUNA-Net as a third perception mode alongside VLLiNet and GT.
+LUNA-Net uses a Swin Transformer backbone with Surface Normal Estimation (SNE),
+optimized for nighttime drivable area detection (ClearNight: F1=97.18%, IoU=94.52%).
+
+Key additions:
+- LUNA-Net perception mode (G key cycles GT -> VLLiNet -> LUNA-Net)
+- SNE surface normal computation from depth (CPU, per-frame)
+- Night weather toggle (N key) for ClearNight preset
+- SNE timing tracked separately in frame logger
+- Triple perception mode in pipeline (PerceptionMode enum)
+
+### V5 Architecture
+
+```text
+manual_painting_control_v4.py           -- V5 main entry point (3-mode perception + N key)
+diag_luna.py                            -- Standalone LUNA-Net verification script
+diag_vllinet.py                         -- Standalone VLLiNet model verification script
+perception/road_segmentor_luna.py       -- LUNA-Net wrapper, same segment() interface
+perception/road_segmentor_ai.py         -- VLLiNet wrapper (preserved)
+perception/road_segmentor.py            -- GT CityScapes segmentor (preserved)
+perception/perception_pipeline.py       -- 3-mode via PerceptionMode (GT/VLLiNet/LUNA)
+evaluation/frame_logger.py              -- + sne_time_ms column (32 columns total)
+```
+
+### V5 Perception Pipeline (LUNA-Net mode)
+
+Each frame:
+1. RGB camera -> BGRA -> RGB, /255.0 normalize to [0,1] -> [1, 3, 384, 1248] tensor
+2. Depth camera -> CARLA decode -> meters -> resize to 1248x384
+3. SNE: depth (H,W) + cam_param (3,4) -> surface normal (3, H, W) on CPU
+4. Normal -> resize -> [1, 3, 384, 1248] tensor
+5. LUNA-Net inference: model(rgb, normal, is_normal=True) -> 2-class logits
+6. argmax(output, dim=1) -> 0/1 mask -> * 255 -> uint8
+7. Apply MASK_TOP_RATIO cutoff (upper 35% zeroed)
+8. Edge extractor + depth projector (same as V3/V4) -> world coordinates
+
+### V5 Key Changes from V4.3
+
+- Perception: 2-mode (GT/VLLiNet) -> 3-mode (GT/VLLiNet/LUNA-Net)
+- Pipeline: use_ai boolean -> PerceptionMode enum (GT/VLLINET/LUNA)
+- Pipeline: use_ai property preserved for backward compatibility
+- G key: toggle -> 3-mode cycle (GT -> VLLiNet -> LUNA-Net -> GT)
+- N key: toggle ClearNight weather (sun_altitude=-30, cloudiness=10, fog=0)
+- Default mode: LUNA-Net (was VLLiNet in V4)
+- New file: perception/road_segmentor_luna.py (LUNA-Net wrapper + SNE)
+- New file: diag_luna.py (standalone LUNA-Net verification)
+- Modified: perception/perception_pipeline.py (PerceptionMode, last_sne_ms)
+- Modified: manual_painting_control_v4.py (3-mode, N key, HUD colors)
+- Modified: evaluation/frame_logger.py (sne_time_ms column, 32 columns)
+- HUD: perception mode shows GT/VLLiNet/LUNA with distinct colors
+- HUD: help text updated for G=Perc N=Night
+
+### V5 LUNA-Net vs VLLiNet
+
+| Aspect | VLLiNet | LUNA-Net |
+|--------|---------|---------|
+| Input | RGB (ImageNet norm) + Depth (min-max) | RGB ([0,1]) + Surface Normal (SNE) |
+| Backbone | MobileNetV3 | Swin Transformer Tiny |
+| Output res | 624x192 (upsample needed) | 1248x384 (native) |
+| Output format | sigmoid > 0.5 | argmax on 2-class logits |
+| Extra step | None | SNE: depth -> surface normal (CPU) |
+| Strength | General road segmentation | Low-light / nighttime scenes |
+
+### V5 Key Parameters
+
+- LUNA-Net input: RGB [0,1] + Normal [SNE output], both 1248x384
+- LUNA-Net output: 2-class logits at input resolution
+- SNE input: depth (H,W) float32 meters + cam_param (3,4) float32
+- SNE output: surface normal (3, H, W) float32
+- Camera intrinsics for SNE: fx=fy=624, cx=624, cy=192 (1248x384, FOV=90)
+- Checkpoint: LUNA-Net_carla/weights/best_net_LUNA_ClearNight.pth
+- Model config: swin_tiny, use_llem=True, use_robust_sne=False, use_iaf=True
+- Model config: use_naa_decoder=True, use_edge_head=True, num_classes=2
+- ClearNight weather: sun_altitude=-30, cloudiness=10, fog_density=0
+- MASK_TOP_RATIO: 0.35 (same as V4)
+- All other parameters same as V4.3
+
+## V4 (VLLiNet AI Perception + Polynomial Extrapolation)
 
 V4 replaces V3's ground-truth CityScapes segmentation with VLLiNet, a trained
 deep learning model (MaxF 98.33%, IoU 96.72%), moving toward real-world
@@ -159,6 +238,32 @@ Key additions:
 - edge_dev: per-row |u_ai - u_gt| for right edge, min 3 matched rows
 - Framelog perception columns: mask_iou, edge_dev_mean_px, edge_dev_median_px, edge_dev_max_px
 
+### V4.3 (Curvature Feedforward Control)
+
+V4.3 addresses V4.2's curve painting interruption issue. The PD controller was purely
+reactive, causing nozzle-edge distance to drop ~0.6m in curves before correction kicked in.
+The state machine would downgrade from PAINTING to CONVERGING at curve entries.
+
+- Curvature feedforward: poly_coeff_a predicts curve ahead, preemptively increases driving_offset
+- Adaptive smoothing: OFFSET_SMOOTH increases from 0.12 to 0.25 in curves for faster response
+- Result: eliminates painting interruption at curve entries
+
+### V4.3 Key Changes from V4.2
+
+- Control: PD-only → PD + curvature feedforward (poly_coeff_a based)
+- set_dynamic_offset(): new poly_coeffs parameter for feedforward
+- Adaptive smoothing: OFFSET_SMOOTH 0.12 (straight) / 0.25 (curve)
+- Modified: planning/vision_path_planner.py (feedforward params + set_dynamic_offset)
+- Modified: manual_painting_control_v4.py (pass poly_coeffs to set_dynamic_offset)
+
+### V4.3 Key Parameters
+
+- CURV_FF_GAIN: 80.0 (feedforward gain, meters per unit curvature excess)
+- CURV_FF_BASELINE: 0.005 (baseline |poly_a| on straights, no feedforward below this)
+- CURV_FF_MAX: 1.0m (cap feedforward contribution)
+- CURV_THRESHOLD: 0.006 (|poly_a| above this triggers curve-mode adaptive smoothing)
+- OFFSET_SMOOTH_CURVE: 0.25 (faster low-pass in curves, vs 0.12 on straights)
+
 ### V3 (Manual Painting Control + Enhanced Visualization) — preserved
 
 V3 builds on V2's vision perception pipeline, adding:
@@ -273,8 +378,9 @@ AutoStripe/
   main_v1.py                 # V1 entry point
   main_v2.py                 # V2 standalone entry point (auto only, no ROS)
   manual_painting_control.py # V3 main entry point (manual/auto + paint control)
-  manual_painting_control_v4.py # V4 main entry point (AI/GT + poly distance)
+  manual_painting_control_v4.py # V5 main entry point (3-mode perception + N key)
   diag_vllinet.py            # V4 standalone VLLiNet model verification
+  diag_luna.py               # V5 standalone LUNA-Net model verification
   carla_env/
     __init__.py
     setup_scene.py            # V1 scene setup
@@ -283,9 +389,10 @@ AutoStripe/
     __init__.py
     road_segmentor.py         # GT: CityScapes color matching -> road mask
     road_segmentor_ai.py      # V4: VLLiNet wrapper -> road mask
+    road_segmentor_luna.py    # V5: LUNA-Net wrapper -> road mask (SNE + Swin)
     edge_extractor.py         # Road mask -> left/right edge pixels
     depth_projector.py        # Pixel + depth -> world coordinates
-    perception_pipeline.py    # AI/GT dual mode (use_ai flag)
+    perception_pipeline.py    # V5: 3-mode (GT/VLLiNet/LUNA) via PerceptionMode
   planning/
     __init__.py
     lane_planner.py           # V1 Map API planner
@@ -317,6 +424,7 @@ AutoStripe/
     perception_metrics.py     # Perception accuracy: mask IoU + edge deviation
     frame_logger.py           # Per-frame 31-column CSV recorder
     visualize_eval.py         # Evaluation plots + 8-panel timeseries + curvature scatter
+    visualize_map.py          # 7 map-based spatial visualizations (Nature style, PDF/SVG)
   datasets/                   # (reserved)
   docs/
     Project_Design.md
@@ -332,6 +440,26 @@ AutoStripe/
 - Functions return dicts or tuples, not custom classes (except MarkerVehicle)
 - Debug drawing uses `persistent_lines=True`, `life_time=1000`
 - Cleanup via actor list passed to `cleanup(actors)`
+- **Evaluation output isolation**: each eval recording session (E key) must create a
+  timestamped subfolder under `evaluation/` (e.g. `evaluation/run_20260211_022107/`).
+  All outputs for that session go inside: framelog CSV, eval summary/detail CSVs.
+  Visualization outputs are further organized into subfolders:
+  - `map/` — map-based spatial plots from `visualize_map.py`
+  - `eval/` — evaluation plots and timeseries from `visualize_eval.py`
+  - Each visualization is saved in three formats: PNG, PDF, SVG
+  - Example structure:
+    ```
+    evaluation/run_20260211_022107/
+      framelog_20260211_022107.csv
+      eval_20260211_022403_1_summary.csv
+      eval_20260211_022403_1_detail.csv
+      map/
+        map_1a_nozzle_trajectory.{png,pdf,svg}
+        map_1b_paint_coverage.{png,pdf,svg}
+      eval/
+        eval_20260211_022403_1_viz.{png,pdf,svg}
+        framelog_20260211_022107_timeseries.{png,pdf,svg}
+    ```
 
 ## Run Instructions
 
@@ -339,11 +467,14 @@ AutoStripe/
 # Terminal 1: Start CARLA
 cd /home/peter/workspaces/carla-0.9.15/CARLA_0.9.15 && ./CarlaUE4.sh
 
-# Terminal 2: Run V4 AI Perception (recommended)
+# Terminal 2: Run V5 Triple Perception (recommended)
 cd /home/peter/workspaces/carla-0.9.15/CARLA_0.9.15/0MyCode/AutoStripe
 python manual_painting_control_v4.py
 
-# Terminal 2: Run V4 model diagnostic (verify VLLiNet loads)
+# Terminal 2: Run LUNA-Net diagnostic (verify LUNA-Net + SNE loads)
+python diag_luna.py
+
+# Terminal 2: Run VLLiNet diagnostic (verify VLLiNet loads)
 python diag_vllinet.py
 
 # Terminal 2: Run V3 Manual Painting Control (GT only)
@@ -363,13 +494,14 @@ roslaunch autostripe autostripe_v4.launch
 roslaunch autostripe autostripe_v2.launch
 ```
 
-### V4 Keyboard Controls
+### V5 Keyboard Controls
 
 | Key | Function |
 |-----|----------|
 | SPACE | Toggle painting ON/OFF |
 | TAB | Toggle Auto/Manual drive mode |
-| G | Toggle AI/GT perception mode |
+| G | Cycle perception mode (GT -> VLLiNet -> LUNA-Net) |
+| N | Toggle ClearNight weather preset |
 | D | Toggle dashed/solid line mode (AUTO only) |
 | E | Toggle eval recording (start/stop + framelog + GT evaluation) |
 | R | Toggle video recording |
@@ -381,6 +513,6 @@ roslaunch autostripe autostripe_v2.launch
 
 ## Future Versions (not yet implemented)
 
-- V4+: Replace VLLiNet with real-world trained model (transfer from CARLA to real camera)
-- V4+: Center lines, all-weather support
-- V4+: Multi-lane support, obstacle avoidance
+- V5+: Replace with real-world trained model (transfer from CARLA to real camera)
+- V5+: Center lines, all-weather support
+- V5+: Multi-lane support, obstacle avoidance

@@ -103,6 +103,8 @@ CARLA_*_Dataset/
 *.onnx
 *.tflite
 *.h5
+*.pdf
+*.svg
 checkpoints/
 weights/
 models/

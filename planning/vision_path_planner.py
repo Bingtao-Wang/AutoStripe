@@ -54,12 +54,17 @@ class VisionPathPlanner:
         self.memory_frames = memory_frames
 
         # Dynamic offset PD-controller parameters
-        self.OFFSET_KP = 0.5              # P gain (reduced from 0.8, D compensates)
+        self.OFFSET_KP = 0.5              # P gain
         self.OFFSET_KD = 0.3              # D gain (damps error rate of change)
         self.OFFSET_MAX_CORRECTION = 2.0   # max +2.0m -> 7.0m total
         self.OFFSET_MIN_CORRECTION = -1.0  # min -1.0m -> 4.0m total
         self.TARGET_NOZZLE_DIST = 3.0      # ideal painting distance
-        self.OFFSET_SMOOTH = 0.12          # low-pass filter rate (faster with D damping)
+
+        # V4.3 error-adaptive smoothing parameters
+        self.SMOOTH_MIN = 0.10             # slow smooth when error is small (precision)
+        self.SMOOTH_MAX = 0.25             # fast smooth when error is large (correction)
+        self.SMOOTH_ERR_LO = 0.15          # below this |error|, use SMOOTH_MIN
+        self.SMOOTH_ERR_HI = 0.30          # above this |error|, use SMOOTH_MAX
 
         # PD controller state
         self._prev_error = 0.0
@@ -69,17 +74,20 @@ class VisionPathPlanner:
         self.driving_coords = []   # list of (x, y)
         self.nozzle_locations = [] # list of carla.Location
 
+        # V4.3 polynomial coefficient EMA (stabilize curvature estimate)
+        self.POLY_EMA_ALPHA = 0.4    # blend: 0=full prev, 1=full current
+        self._prev_poly_coeffs = None
+
         # Short-term memory: fallback when perception fails
         self._last_valid_driving = []
         self._last_valid_nozzle = []
         self._memory_counter = 0
 
-    def set_dynamic_offset(self, nozzle_edge_dist):
-        """Adjust driving_offset via PD-controller with low-pass smoothing.
+    def set_dynamic_offset(self, nozzle_edge_dist, poly_coeffs=None):
+        """Adjust driving_offset via PD-controller + error-adaptive smoothing.
 
-        correction = Kp * error + Kd * d_error
-        offset_target = base + clamp(correction)
-        offset = smooth * offset_target + (1 - smooth) * offset_prev
+        V4.3: large error → fast smoothing for quick correction,
+        small error → slow smoothing for precision. No feedforward.
         """
         error = self.TARGET_NOZZLE_DIST - nozzle_edge_dist
 
@@ -95,8 +103,19 @@ class VisionPathPlanner:
         correction = max(self.OFFSET_MIN_CORRECTION,
                          min(self.OFFSET_MAX_CORRECTION, correction))
         target_offset = self._base_driving_offset + correction
-        self.driving_offset = (self.OFFSET_SMOOTH * target_offset
-                               + (1.0 - self.OFFSET_SMOOTH) * self.driving_offset)
+
+        # Error-adaptive smoothing: interpolate between slow and fast
+        abs_err = abs(error)
+        if abs_err <= self.SMOOTH_ERR_LO:
+            smooth = self.SMOOTH_MIN
+        elif abs_err >= self.SMOOTH_ERR_HI:
+            smooth = self.SMOOTH_MAX
+        else:
+            t = (abs_err - self.SMOOTH_ERR_LO) / (self.SMOOTH_ERR_HI - self.SMOOTH_ERR_LO)
+            smooth = self.SMOOTH_MIN + t * (self.SMOOTH_MAX - self.SMOOTH_MIN)
+
+        self.driving_offset = (smooth * target_offset
+                               + (1.0 - smooth) * self.driving_offset)
 
     def update(self, right_edges, vehicle_transform):
         """Process one frame of right road edge and generate driving path.
@@ -319,6 +338,12 @@ class VisionPathPlanner:
             coeffs = np.polyfit(lon_np, lat_np, deg=2)
         except (np.linalg.LinAlgError, ValueError):
             return None, None
+
+        # V4.3 Layer 1: EMA on polynomial coefficients to stabilize curvature
+        if self._prev_poly_coeffs is not None:
+            a = self.POLY_EMA_ALPHA
+            coeffs = a * coeffs + (1.0 - a) * self._prev_poly_coeffs
+        self._prev_poly_coeffs = coeffs.copy()
 
         # Extrapolated nozzle distance = polynomial value at lon=0 = c
         nozzle_dist = float(coeffs[2])

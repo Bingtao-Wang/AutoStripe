@@ -1,13 +1,13 @@
 """Per-frame CSV logger for paper-grade data recording.
 
-Records 31 columns of per-frame telemetry when eval_recording is active.
+Records 32 columns of per-frame telemetry when eval_recording is active.
 Output: evaluation/framelog_YYYYMMDD_HHMMSS.csv
 
 Usage:
     logger = FrameLogger()
     logger.start()
     for each frame:
-        logger.log_frame({...})  # dict with 27 fields
+        logger.log_frame({...})  # dict with fields
     logger.stop()
 """
 
@@ -24,7 +24,7 @@ COLUMNS = [
     'lateral_error', 'paint_state', 'painting_enabled', 'dash_phase',
     'perception_mode', 'ai_edge_pts', 'gt_edge_pts', 'road_mask_ratio',
     'poly_coeff_a', 'poly_coeff_b', 'poly_coeff_c',
-    'inference_time_ms',
+    'inference_time_ms', 'sne_time_ms',
     'mask_iou', 'edge_dev_mean_px', 'edge_dev_median_px', 'edge_dev_max_px',
 ]
 

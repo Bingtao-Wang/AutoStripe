@@ -31,7 +31,8 @@ import cv2
 
 
 # --- Config ---
-SPAWN_X, SPAWN_Y, SPAWN_Z, SPAWN_YAW = 155.0, -5.7, 0.60, -90.1
+SPAWN_X, SPAWN_Y, SPAWN_Z, SPAWN_YAW = 155.0, -20.0, 20.0, -90.1
+SPAWN_IDX = 0  # Index into Town04's recommended spawn points
 WINDOW_W, WINDOW_H = 960, 540
 NOZZLE_OFFSET = 2.0  # meters to the right of vehicle center
 
@@ -99,14 +100,29 @@ def main():
         # Connect
         client = carla.Client('localhost', 2000)
         client.set_timeout(5.0)
-        world = client.get_world()
+        world = client.load_world('Town04')
+        weather = carla.WeatherParameters()
+        weather.cloudiness = 10.0
+        weather.precipitation = 0.0
+        weather.precipitation_deposits = 0.0
+        weather.wind_intensity = 5.0
+        weather.sun_altitude_angle = 5.0
+        weather.fog_density = 0.0
+        weather.fog_distance = 100.0
+        weather.wetness = 0.0
+        world.set_weather(weather)
         bp_lib = world.get_blueprint_library()
 
-        # Spawn vehicle
+        # Spawn vehicle at a recommended spawn point
         vehicle_bp = bp_lib.filter('vehicle.*stl*')[0]
-        spawn_tf = carla.Transform(
-            carla.Location(x=SPAWN_X, y=SPAWN_Y, z=SPAWN_Z),
-            carla.Rotation(yaw=SPAWN_YAW))
+        spawn_points = world.get_map().get_spawn_points()
+        print(f"  Town04 has {len(spawn_points)} spawn points")
+        # Use first spawn point, or SPAWN index if set
+        sp_idx = min(SPAWN_IDX, len(spawn_points) - 1)
+        spawn_tf = spawn_points[sp_idx]
+        print(f"  Using spawn #{sp_idx}: x={spawn_tf.location.x:.1f}, "
+              f"y={spawn_tf.location.y:.1f}, z={spawn_tf.location.z:.1f}, "
+              f"yaw={spawn_tf.rotation.yaw:.1f}")
         vehicle = world.spawn_actor(vehicle_bp, spawn_tf)
         actors.append(vehicle)
         print(f"Vehicle spawned: {vehicle.type_id}")

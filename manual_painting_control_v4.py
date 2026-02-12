@@ -1,17 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""AutoStripe V4 - Manual Painting Control with VLLiNet AI Perception
+"""AutoStripe V5 - Manual Painting Control with Triple Perception Mode
 
-Based on V3 manual_painting_control.py, adds:
-- VLLiNet AI road segmentation (G key toggles AI/GT mode)
-- Polynomial extrapolation for nozzle-edge distance (blind spot)
-- Camera resolution 1248x384 to match VLLiNet training
-- Magenta polynomial curve visualization
+Based on V4, adds:
+- LUNA-Net perception mode (G key cycles GT -> VLLiNet -> LUNA-Net)
+- Night weather toggle (N key) for LUNA-Net low-light testing
+- SNE timing tracking for LUNA-Net mode
 
 Keyboard Controls:
   SPACE - Toggle painting ON/OFF
   TAB   - Toggle Auto/Manual drive mode
-  G     - Toggle AI/GT perception mode
+  G     - Cycle perception mode (GT -> VLLiNet -> LUNA-Net)
+  N     - Toggle ClearNight weather preset
+  D     - Toggle dashed/solid line mode (AUTO only)
+  E     - Toggle eval recording (start/stop + framelog + GT evaluation)
   R     - Toggle video recording (front + overhead)
   WASD/Arrows - Manual drive
   Q     - Toggle reverse
@@ -30,7 +32,7 @@ import sys
 import time
 import math
 import pygame
-from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r, K_e
+from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r, K_e, K_n
 from pygame.locals import K_w, K_a, K_s, K_d, K_x, K_v
 from pygame.locals import K_UP, K_DOWN, K_LEFT, K_RIGHT
 
@@ -51,7 +53,7 @@ import cv2
 # V4 modules
 from carla_env.setup_scene_v2 import setup_scene_v2, FRONT_CAM_W, FRONT_CAM_H
 from carla_env.setup_scene import update_spectator
-from perception.perception_pipeline import PerceptionPipeline
+from perception.perception_pipeline import PerceptionPipeline, PerceptionMode
 from planning.vision_path_planner import VisionPathPlanner
 from control.marker_vehicle_v2 import MarkerVehicleV2
 from utils.video_recorder import VideoRecorder
@@ -68,13 +70,22 @@ class AutoPaintStateMachine:
 
     V4.2: Hysteresis (enter/exit tolerances) + grace frames to prevent
     frequent state transitions from momentary oscillations.
+    V4.3: Curvature-adaptive tolerances — widen in curves where Pure Pursuit
+    has systematic lateral error, preventing unnecessary paint breaks.
     """
 
     STATE_CONVERGING = "CONVERGING"
     STATE_STABILIZED = "STABILIZED"
     STATE_PAINTING = "PAINTING"
 
-    GRACE_LIMIT = 15  # frames allowed outside tolerance before downgrade
+    GRACE_LIMIT = 15          # PAINTING grace frames before downgrade
+    STABILIZED_GRACE = 10     # STABILIZED grace frames before downgrade
+
+    # V4.3 curvature-adaptive tolerance parameters
+    CURV_LO = 0.004           # below this |poly_a|, straight road (base tolerances)
+    CURV_HI = 0.010           # above this |poly_a|, full curve (max tolerances)
+    TOL_ENTER_CURVE = 0.55    # widened enter tolerance in curves
+    TOL_EXIT_CURVE = 0.80     # widened exit tolerance in curves
 
     def __init__(self, target_dist=3.0, tolerance_enter=0.3,
                  tolerance_exit=0.45, stability_frames=60, min_speed=1.0):
@@ -89,11 +100,26 @@ class AutoPaintStateMachine:
         self._grace_count = 0
         self._manual_override = False
 
-    def update(self, nozzle_edge_dist, speed):
+    def _adaptive_tolerances(self, poly_coeff_a):
+        """Compute curvature-adaptive enter/exit tolerances."""
+        if poly_coeff_a is None:
+            return self.tolerance_enter, self.tolerance_exit
+        curv = abs(poly_coeff_a)
+        if curv <= self.CURV_LO:
+            return self.tolerance_enter, self.tolerance_exit
+        if curv >= self.CURV_HI:
+            return self.TOL_ENTER_CURVE, self.TOL_EXIT_CURVE
+        t = (curv - self.CURV_LO) / (self.CURV_HI - self.CURV_LO)
+        te = self.tolerance_enter + t * (self.TOL_ENTER_CURVE - self.tolerance_enter)
+        tx = self.tolerance_exit + t * (self.TOL_EXIT_CURVE - self.tolerance_exit)
+        return te, tx
+
+    def update(self, nozzle_edge_dist, speed, poly_coeff_a=None):
         """Update state machine. Returns True if painting should be active."""
+        tol_enter, tol_exit = self._adaptive_tolerances(poly_coeff_a)
         error = abs(nozzle_edge_dist - self.target_dist)
-        in_enter = error < self.tolerance_enter
-        in_exit = error < self.tolerance_exit
+        in_enter = error < tol_enter
+        in_exit = error < tol_exit
         speed_ok = speed > self.min_speed
 
         if self._manual_override:
@@ -106,11 +132,18 @@ class AutoPaintStateMachine:
                 self._grace_count = 0
 
         elif self.state == self.STATE_STABILIZED:
-            if not in_exit or not speed_ok:
+            if not speed_ok:
                 self.state = self.STATE_CONVERGING
                 self._stable_count = 0
                 self._grace_count = 0
+            elif not in_exit:
+                self._grace_count += 1
+                if self._grace_count >= self.STABILIZED_GRACE:
+                    self.state = self.STATE_CONVERGING
+                    self._stable_count = 0
+                    self._grace_count = 0
             else:
+                self._grace_count = 0
                 self._stable_count += 1
                 if self._stable_count >= self.stability_frames:
                     self.state = self.STATE_PAINTING
@@ -330,7 +363,12 @@ def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
 
     # Perception mode
     perc_text = f"PERC: {perception_mode}"
-    perc_color = (255, 0, 255) if perception_mode == "AI" else (0, 255, 0)
+    if perception_mode == "GT":
+        perc_color = (0, 255, 0)
+    elif perception_mode == "LUNA":
+        perc_color = (0, 200, 255)
+    else:
+        perc_color = (255, 0, 255)
     cv2.putText(img, perc_text, (500, 55),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.8, perc_color, 4)
 
@@ -404,11 +442,11 @@ def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
     help_y = h - 200
     cv2.putText(img, "Controls:", (20, help_y),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, (200, 200, 200), 3)
-    cv2.putText(img, "TAB=Mode SPACE=Paint G=AI/GT R=Rec", (20, help_y + 45),
+    cv2.putText(img, "TAB=Mode SPACE=Paint G=Perc R=Rec", (20, help_y + 45),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
-    cv2.putText(img, "D=Dash E=EvalRec V=Cam WASD=Drive", (20, help_y + 85),
+    cv2.putText(img, "D=Dash E=EvalRec N=Night V=Cam", (20, help_y + 85),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
-    cv2.putText(img, "Q=Reverse X=Brake ESC=Quit", (20, help_y + 125),
+    cv2.putText(img, "Q=Reverse X=Brake WASD=Drive ESC=Quit", (20, help_y + 125),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
 
     return img
@@ -568,6 +606,9 @@ SPAWN_POINTS = {
     4: {"x": 0.0,    "y": 208.8, "z": 9.00, "yaw": 0.0,   "desc": ""},
     5: {"x": 90.0,   "y": -190.0, "z": 0.50, "yaw": -0.2,  "desc": "Highway SP1 reverse into right curve"},
     6: {"x": 94.6,   "y": -146.1, "z": 0.30, "yaw": 189.0, "desc": "Post-turn westbound (from SP4 right curve)"},
+    7: {"x": 60.0,   "y": 209.0,  "z": 9.00, "yaw": 0.0,   "desc": "Straight before right curve (test zone)"},
+    8: {"x": 210.0,  "y": 75.0,   "z": 9.00, "yaw": -90.0, "desc": "After right curve, straight start"},
+    9: {"x": 128.0,  "y": 37.0,   "z": 20.0, "yaw": 0.0,   "desc": "Town04 highway", "map": "Town04"},
 }
 ACTIVE_SPAWN = 2  # <-- Change this to switch spawn point
 
@@ -575,14 +616,15 @@ ACTIVE_SPAWN = 2  # <-- Change this to switch spawn point
 def main():
     sp = SPAWN_POINTS[ACTIVE_SPAWN]
     print("=" * 60)
-    print("  AutoStripe V4 - AI Perception + Manual Painting Control")
+    print("  AutoStripe V5 - Triple Perception + Manual Painting Control")
     print(f"  Spawn #{ACTIVE_SPAWN}: {sp['desc']}")
     print(f"  Location: x={sp['x']}, y={sp['y']}, yaw={sp['yaw']}")
     print("=" * 60)
     print("\nControls:")
     print("  SPACE - Toggle painting ON/OFF")
     print("  TAB   - Toggle Auto/Manual drive")
-    print("  G     - Toggle AI/GT perception")
+    print("  G     - Cycle perception (GT/VLLiNet/LUNA)")
+    print("  N     - Toggle ClearNight weather")
     print("  R     - Toggle video recording")
     print("  ESC   - Quit")
     print("\nStarting...\n")
@@ -595,22 +637,25 @@ def main():
     pg_clock = pygame.time.Clock()
 
     actors = []
-    # Perception mode: True=AI (VLLiNet), False=GT (CityScapes)
-    use_ai_mode = True
+    # V5: Three-mode perception (GT / VLLiNet / LUNA-Net)
+    PERCEPTION_MODES = [PerceptionMode.GT, PerceptionMode.VLLINET, PerceptionMode.LUNA]
+    perception_mode = PerceptionMode.LUNA  # V5 default
+    night_weather = False  # N key toggle
 
     try:
         # 1. Setup scene
         scene = setup_scene_v2(
+            map_name=sp.get('map', 'Town05'),
             spawn_x=sp['x'], spawn_y=sp['y'],
             spawn_z=sp['z'], spawn_yaw=sp['yaw'])
         actors = scene['actors']
         world = scene['world']
         vehicle = scene['vehicle']
 
-        # 2. Initialize modules — start in AI mode
+        # 2. Initialize modules — start in configured perception mode
         perception = PerceptionPipeline(
             img_w=FRONT_CAM_W, img_h=FRONT_CAM_H, fov_deg=90.0,
-            use_ai=use_ai_mode
+            perception_mode=perception_mode
         )
         planner = VisionPathPlanner(
             line_offset=3.0, nozzle_arm=2.0, smooth_window=5
@@ -626,7 +671,7 @@ def main():
         # 3b. Auto-paint state machine
         auto_paint = AutoPaintStateMachine(
             target_dist=3.0, tolerance_enter=0.3, tolerance_exit=0.45,
-            stability_frames=60, min_speed=1.0)
+            stability_frames=30, min_speed=1.0)
 
         # 3c. Trajectory evaluator (E key toggle: start/stop recording)
         evaluator = TrajectoryEvaluator(scene['map'])
@@ -663,7 +708,8 @@ def main():
 
         print("=" * 60)
         print("  System ready! Press SPACE to start painting")
-        print("  Press G to toggle AI/GT perception mode")
+        print("  Press G to cycle perception: GT/VLLiNet/LUNA")
+        print("  Press N to toggle ClearNight weather")
         print("=" * 60)
 
         while True:
@@ -718,9 +764,10 @@ def main():
 
             # Dynamic offset: adjust driving_offset before path generation
             # poly_dist is vehicle-center-to-edge; subtract nozzle_arm to get nozzle-to-edge
+            # V4.3: pass poly_coeffs for curvature feedforward (uses previous frame, 1-frame lag OK)
             if poly_dist is not None:
                 nozzle_dist_est = poly_dist - planner.nozzle_arm
-                planner.set_dynamic_offset(nozzle_dist_est)
+                planner.set_dynamic_offset(nozzle_dist_est, poly_coeffs=poly_coeffs)
 
             driving_coords, _ = planner.update(right_world, veh_tf)
 
@@ -743,7 +790,7 @@ def main():
                 poly_dist = None
 
             # --- Visualize: right edge red dots (skip in AI mode to avoid polluting camera) ---
-            if not use_ai_mode:
+            if not perception.use_ai:
                 _draw_right_edge_dots(world, right_world, veh_tf)
 
             # --- Control ---
@@ -761,7 +808,7 @@ def main():
             nozzle_loc = get_nozzle_position(vehicle)
 
             # --- Visualize: driving path + poly curve (skip in AI mode) ---
-            if not use_ai_mode:
+            if not perception.use_ai:
                 draw_driving_path(world, driving_coords, veh_tf)
                 draw_poly_curve(world, poly_coeffs, veh_tf)
 
@@ -788,7 +835,7 @@ def main():
                     x=(nozzle_raised.x + nozzle_edge_pt.x) / 2,
                     y=(nozzle_raised.y + nozzle_edge_pt.y) / 2,
                     z=nozzle_raised.z + 0.3)
-                if not use_ai_mode:
+                if not perception.use_ai:
                     world.debug.draw_line(
                         nozzle_raised, nozzle_edge_pt,
                         thickness=0.08,
@@ -839,7 +886,8 @@ def main():
                 dist_for_sm = poly_dist - planner.nozzle_arm
             else:
                 dist_for_sm = edge_dist_r
-            should_paint = auto_paint.update(dist_for_sm, speed)
+            _poly_a = poly_coeffs[0] if poly_coeffs is not None else None
+            should_paint = auto_paint.update(dist_for_sm, speed, poly_coeff_a=_poly_a)
             if paint_ctrl.auto_drive and not auto_paint._manual_override:
                 paint_ctrl.painting_enabled = should_paint
 
@@ -868,7 +916,7 @@ def main():
                 _edge_mean = -1.0
                 _edge_median = -1.0
                 _edge_max = -1.0
-                if use_ai_mode:
+                if perception.use_ai:
                     _mask_iou = compute_mask_iou(road_mask, gt_road_mask)
                     edge_dev = compute_edge_deviation(right_px, gt_right_px)
                     if edge_dev is not None:
@@ -897,7 +945,7 @@ def main():
                     'paint_state': auto_paint.state,
                     'painting_enabled': int(paint_ctrl.painting_enabled),
                     'dash_phase': int(paint_ctrl._dash_painting) if paint_ctrl.dash_mode else -1,
-                    'perception_mode': 'AI' if use_ai_mode else 'GT',
+                    'perception_mode': perception.perception_mode,
                     'ai_edge_pts': len(right_world) if right_world else 0,
                     'gt_edge_pts': len(gt_right_world) if gt_right_world else 0,
                     'road_mask_ratio': _rmr,
@@ -905,6 +953,7 @@ def main():
                     'poly_coeff_b': _pb,
                     'poly_coeff_c': _pc,
                     'inference_time_ms': perception.last_inference_ms if run_percept else -1.0,
+                    'sne_time_ms': perception.last_sne_ms if run_percept else -1.0,
                     'mask_iou': _mask_iou,
                     'edge_dev_mean_px': _edge_mean,
                     'edge_dev_median_px': _edge_median,
@@ -914,7 +963,7 @@ def main():
             # --- Render overhead view ---
             overhead_img = _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
                              edge_dist_r, nozzle_mid,
-                             speed, frame_count, poly_dist, use_ai_mode,
+                             speed, frame_count, poly_dist, perception.use_ai,
                              right_world=right_world,
                              driving_coords=driving_coords,
                              poly_coeffs=poly_coeffs,
@@ -928,16 +977,27 @@ def main():
                              controller=controller,
                              is_recording=recorder.is_recording,
                              eval_recording=eval_recording,
-                             spectator_follow=spectator_follow)
+                             spectator_follow=spectator_follow,
+                             perception_mode_str=perception.perception_mode)
 
             # --- Record overhead frame ---
             recorder.write_overhead(overhead_img)
+
+            # --- Depth camera visualization (diagnostic) ---
+            if depth_data is not None:
+                from perception.depth_projector import decode_depth_image
+                depth_m = decode_depth_image(depth_data)
+                depth_vis = np.clip(depth_m / 50.0, 0, 1)  # normalize 0-50m
+                depth_vis = (depth_vis * 255).astype(np.uint8)
+                depth_color = cv2.applyColorMap(depth_vis, cv2.COLORMAP_MAGMA)
+                cv2.imshow("Depth Camera", depth_color)
+                cv2.waitKey(1)
 
             # --- Render front view in pygame ---
             _render_front_view(pg_screen, rgb_front, road_mask, scene,
                                nozzle_mid, edge_dist_r,
                                right_world, driving_coords, poly_coeffs,
-                               veh_tf, use_ai_mode,
+                               veh_tf, perception.use_ai,
                                nozzle_raised, nozzle_edge_pt,
                                right_px=right_px, poly_dist=poly_dist,
                                driving_coords_gt=driving_coords_gt,
@@ -968,23 +1028,54 @@ def main():
                             front_size=(FRONT_CAM_W, FRONT_CAM_H),
                             overhead_size=(1800, 1600))
                     elif event.key == K_g:
-                        use_ai_mode = not use_ai_mode
+                        # V5: cycle through GT -> VLLiNet -> LUNA-Net
+                        idx = PERCEPTION_MODES.index(perception_mode)
+                        perception_mode = PERCEPTION_MODES[(idx + 1) % len(PERCEPTION_MODES)]
                         perception = PerceptionPipeline(
                             img_w=FRONT_CAM_W, img_h=FRONT_CAM_H,
-                            fov_deg=90.0, use_ai=use_ai_mode
+                            fov_deg=90.0, perception_mode=perception_mode
                         )
-                        mode_str = "AI (VLLiNet)" if use_ai_mode else "GT (CityScapes)"
+                        cached_result = None
                         print(f"\n{'='*50}")
-                        print(f"  Perception: {mode_str}")
+                        print(f"  Perception: {perception_mode}")
+                        print(f"{'='*50}\n")
+                    elif event.key == K_n:
+                        # V5: toggle ClearNight weather
+                        night_weather = not night_weather
+                        weather = world.get_weather()
+                        if night_weather:
+                            weather.sun_altitude_angle = -30.0
+                            weather.cloudiness = 10.0
+                            weather.fog_density = 0.0
+                        else:
+                            weather.sun_altitude_angle = 5.0
+                            weather.cloudiness = 10.0
+                            weather.precipitation = 0.0
+                            weather.precipitation_deposits = 0.0
+                            weather.wind_intensity = 5.0
+                            weather.fog_density = 0.0
+                            weather.fog_distance = 100.0
+                            weather.wetness = 0.0
+                        world.set_weather(weather)
+                        w_str = "ClearNight" if night_weather else "ClearDay"
+                        print(f"\n{'='*50}")
+                        print(f"  Weather: {w_str}")
                         print(f"{'='*50}\n")
                     elif event.key == K_e:
                         if evaluator is None:
                             print("  Evaluator not available.")
                         elif not eval_recording:
-                            # 开始记录
+                            # 开始记录 — 创建 run 子目录
                             eval_recording = True
                             eval_trail_start_idx = len(paint_ctrl.paint_trail)
+                            run_ts = time.strftime("%Y%m%d_%H%M%S")
+                            run_dir = os.path.join(
+                                os.path.dirname(os.path.abspath(__file__)),
+                                'evaluation', f'run_{run_ts}')
+                            os.makedirs(run_dir, exist_ok=True)
+                            frame_logger = FrameLogger(output_dir=run_dir)
                             frame_logger.start()
+                            evaluator.set_output_dir(run_dir)
                             print(f"\n{'='*50}")
                             print(f"  Eval: RECORDING started (idx={eval_trail_start_idx})")
                             print(f"  Press E again to stop and evaluate")
@@ -1013,7 +1104,7 @@ def main():
                 paint_ctrl.update_manual_control(keys)
 
             # --- Pygame HUD overlay ---
-            perc_mode = "AI" if use_ai_mode else "GT"
+            perc_mode = perception.perception_mode
             ap_state = auto_paint.state
             if auto_paint._manual_override:
                 ap_state_str = "MANUAL"
@@ -1032,7 +1123,7 @@ def main():
                 ("Drive: AUTO" if paint_ctrl.auto_drive else "Drive: MANUAL",
                  (0, 255, 0) if paint_ctrl.auto_drive else (255, 255, 0)),
                 (f"Perc: {perc_mode}",
-                 (255, 0, 255) if use_ai_mode else (0, 255, 0)),
+                 (0, 255, 0) if perc_mode == "GT" else (0, 200, 255) if perc_mode == "LUNA" else (255, 0, 255)),
                 (f"FPS: {fps:.0f}",
                  (0, 255, 0) if fps >= 15 else (0, 255, 255) if fps >= 10 else (255, 0, 0)),
                 ("Paint: ON" if paint_ctrl.painting_enabled else "Paint: OFF",
@@ -1055,7 +1146,7 @@ def main():
                  (255, 165, 0)),
                 ("Cam: FOLLOW" if spectator_follow else "Cam: FREE",
                  (0, 200, 255) if spectator_follow else (255, 150, 0)),
-                ("TAB=Mode SPACE=Paint G=AI/GT R=Rec", (200, 200, 200)),
+                ("TAB=Mode SPACE=Paint G=Perc N=Night R=Rec", (200, 200, 200)),
                 ("D=Dash E=EvalRec V=Cam WASD=Drive ESC=Quit", (200, 200, 200)),
             ]
             for i, (text, color) in enumerate(lines):
@@ -1095,7 +1186,8 @@ def main():
 
     finally:
         print("\nCleaning up...")
-        frame_logger.stop()
+        if 'frame_logger' in dir():
+            frame_logger.stop()
         recorder.release()
         pygame.quit()
         cv2.destroyAllWindows()
@@ -1152,6 +1244,7 @@ def _draw_right_edge_dots(world, right_world, veh_tf):
 def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
                      edge_dist_r, nozzle_mid,
                      speed, frame_count, poly_dist, use_ai_mode,
+                     perception_mode_str=None,
                      right_world=None, driving_coords=None,
                      poly_coeffs=None, nozzle_raised=None,
                      nozzle_edge_pt=None, driving_coords_gt=None,
@@ -1253,7 +1346,7 @@ def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
 
     drive_mode = "AUTO" if paint_ctrl.auto_drive else "MANUAL"
-    perc_mode = "AI" if use_ai_mode else "GT"
+    perc_mode = perception_mode_str if perception_mode_str else ("AI" if use_ai_mode else "GT")
 
     # AutoPaint state string + color (RGB for draw_status_overlay)
     ap_state_str = ""

@@ -26,7 +26,7 @@ from carla import ColorConverter as cc
 # V4: resolution 1248x384, position (2.5, 2.8) to clear vehicle body
 FRONT_CAM_X = 2.5
 FRONT_CAM_Z = 3.5
-FRONT_CAM_PITCH = -10
+FRONT_CAM_PITCH = -15
 FRONT_CAM_W = 1248
 FRONT_CAM_H = 384
 FRONT_CAM_FOV = 90

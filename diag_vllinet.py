@@ -52,7 +52,7 @@ from models.backbone import LiDAREncoder
 CHECKPOINT_PATH = os.path.join(VLLINET_DIR, 'checkpoints_carla', 'best_model.pth')
 IMG_W, IMG_H = 1248, 384
 CAM_FOV = 90
-CAM_X, CAM_Z, CAM_PITCH = 2.5, 3.5, -10
+CAM_X, CAM_Z, CAM_PITCH = 2.5, 3.5, -15
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 

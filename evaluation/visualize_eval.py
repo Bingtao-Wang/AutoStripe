@@ -12,8 +12,35 @@ import glob
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib.cm import ScalarMappable
+
+# Paper-safe deviation colormap: green (good, 0) → gold → red → dark red (bad)
+CMAP_DEVIATION = LinearSegmentedColormap.from_list('deviation', [
+    (0.0,  '#1a9850'),   # emerald green (ideal)
+    (0.33, '#66bd63'),   # medium green
+    (0.55, '#d9a528'),   # gold
+    (0.78, '#d73027'),   # red
+    (1.0,  '#a50026'),   # dark red (worst)
+], N=256)
+
+# --- Times New Roman global config ---
+plt.rcParams.update({
+    'font.family': 'serif',
+    'font.serif': ['Times New Roman', 'DejaVu Serif'],
+    'mathtext.fontset': 'stix',
+    'font.size': 14,
+    'axes.linewidth': 0.8,
+    'axes.spines.top': False,
+    'axes.spines.right': False,
+    'xtick.major.width': 0.8,
+    'ytick.major.width': 0.8,
+    'xtick.direction': 'out',
+    'ytick.direction': 'out',
+    'figure.facecolor': 'white',
+    'axes.facecolor': 'white',
+    'savefig.facecolor': 'white',
+})
 
 
 def load_summary(path):
@@ -116,7 +143,7 @@ def plot_evaluation(summary_path):
 
     # --- Figure setup ---
     fig = plt.figure(figsize=(18, 12))
-    fig.suptitle(f"AutoStripe Evaluation: {eval_name}", fontsize=14, fontweight='bold')
+    fig.suptitle(f"AutoStripe Evaluation: {eval_name}", fontsize=17, fontweight='bold')
     gs = GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.35)
 
     # =============================================
@@ -149,14 +176,13 @@ def plot_evaluation(summary_path):
     ax5 = fig.add_subplot(gs[1, 2])
     plot_cumulative_distribution(ax5, dists, in_range)
 
-    out_path = summary_path.replace("_summary.csv", "_viz.png")
-    fig.savefig(out_path, dpi=150, bbox_inches='tight')
-    print(f"Saved: {out_path}")
+    eval_out = os.path.join(os.path.dirname(summary_path), 'eval')
+    os.makedirs(eval_out, exist_ok=True)
+    base = os.path.join(eval_out, os.path.basename(summary_path).replace("_summary.csv", "_viz"))
+    for ext in ['png', 'pdf', 'svg']:
+        fig.savefig(f"{base}.{ext}", dpi=150, bbox_inches='tight')
+    print(f"Saved: {base}.{{png,pdf,svg}}")
     plt.close(fig)
-
-    # Auto-detect new 8-col format and generate curvature-deviation plot
-    if isinstance(detail, dict) and 'local_curvature' in detail:
-        plot_curvature_vs_deviation(detail_path)
 
 
 def plot_xy_trajectory(ax, px, py, dists, in_range, thresh):
@@ -168,18 +194,18 @@ def plot_xy_trajectory(ax, px, py, dists, in_range, thresh):
     # Out-of-range points in gray
     if np.any(~in_range):
         ax.scatter(px[~in_range], py[~in_range],
-                   c='lightgray', s=2, alpha=0.3, label='Out of GT range')
+                   c='#999999', s=2, alpha=0.5, label='Out of GT range')
 
     # In-range points colored by deviation
     sc = ax.scatter(px[in_range], py[in_range],
-                    c=dists_clamped[in_range], cmap='RdYlGn_r',
+                    c=dists_clamped[in_range], cmap=CMAP_DEVIATION,
                     norm=norm, s=4, alpha=0.8)
 
     ax.set_xlabel('X (m)')
     ax.set_ylabel('Y (m)')
     ax.set_title('Paint Trail (color = deviation from GT)')
     ax.set_aspect('equal')
-    ax.legend(loc='upper left', fontsize=8)
+    ax.legend(loc='upper left', fontsize=11)
 
     cbar = plt.colorbar(sc, ax=ax, shrink=0.8)
     cbar.set_label('Deviation (m)')
@@ -217,15 +243,15 @@ def plot_summary_text(ax, metrics, n_total, in_range, dists):
     for label, value in lines:
         if value is None and label:
             ax.text(0.05, y, label, transform=ax.transAxes,
-                    fontsize=10, fontweight='bold', va='top',
+                    fontsize=13, fontweight='bold', va='top',
                     fontfamily='monospace')
         elif label == "":
             pass  # spacer
         else:
             ax.text(0.05, y, f"{label}:", transform=ax.transAxes,
-                    fontsize=9, va='top', fontfamily='monospace')
+                    fontsize=11, va='top', fontfamily='monospace')
             ax.text(0.95, y, value, transform=ax.transAxes,
-                    fontsize=9, va='top', ha='right', fontfamily='monospace',
+                    fontsize=11, va='top', ha='right', fontfamily='monospace',
                     color='#2166ac')
         y -= 0.055
 
@@ -245,7 +271,7 @@ def plot_deviation_along_trail(ax, dists, in_range, thresh):
     ax.set_xlabel('Point Index')
     ax.set_ylabel('Deviation (m)')
     ax.set_title('Deviation Along Trail')
-    ax.legend(fontsize=7, loc='upper left')
+    ax.legend(fontsize=10, loc='upper left')
     ax.set_yscale('log')
     ax.grid(True, alpha=0.3)
 
@@ -266,7 +292,7 @@ def plot_deviation_histogram(ax, dists, in_range):
     ax.set_xlabel('Deviation (m)')
     ax.set_ylabel('Count')
     ax.set_title('Deviation Distribution (in-range)')
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
 
 
@@ -287,7 +313,7 @@ def plot_cumulative_distribution(ax, dists, in_range):
         ax.axhline(pct / 100, color='gray', linestyle=':', linewidth=0.5)
         ax.axvline(val, color='gray', linestyle=':', linewidth=0.5)
         ax.annotate(f'P{pct}: {val:.2f}m',
-                    xy=(val, pct / 100), fontsize=7,
+                    xy=(val, pct / 100), fontsize=9,
                     xytext=(5, -5), textcoords='offset points')
 
     ax.set_xlabel('Deviation (m)')
@@ -353,7 +379,7 @@ def plot_timeseries(framelog_path):
 
     fig, axes = plt.subplots(n_panels, 1, figsize=(14, fig_h), sharex=True)
     fig.suptitle(f"Timeseries: {os.path.basename(framelog_path)}",
-                 fontsize=13, fontweight='bold')
+                 fontsize=16, fontweight='bold')
 
     # --- Panel 1: distances + paint state color band ---
     ax = axes[0]
@@ -368,7 +394,7 @@ def plot_timeseries(framelog_path):
     ax.axhline(3.0, color='gray', linestyle='--', linewidth=0.8, label='Target 3m')
     ax.set_ylabel('Distance (m)')
     ax.set_title('Nozzle-Edge & Poly-Edge Distance')
-    ax.legend(fontsize=7, loc='upper right')
+    ax.legend(fontsize=10, loc='upper right')
     ax.grid(True, alpha=0.3)
 
     # --- Panel 2: driving offset ---
@@ -386,7 +412,7 @@ def plot_timeseries(framelog_path):
             color='blue', linewidth=1, alpha=0.7, label='Steer Filter')
     ax.set_ylabel('Value')
     ax.set_title('Steering Command & Filter')
-    ax.legend(fontsize=7, loc='upper right')
+    ax.legend(fontsize=10, loc='upper right')
     ax.grid(True, alpha=0.3)
 
     # --- Panel 4: speed ---
@@ -429,8 +455,13 @@ def plot_timeseries(framelog_path):
                        linewidth=0.8, label=f'Mean: {mean_iou:.3f}')
         ax.set_ylabel('IoU')
         ax.set_title('Perception: Mask IoU (AI vs GT)')
-        ax.set_ylim(-0.05, 1.05)
-        ax.legend(fontsize=7, loc='lower right')
+        if np.any(valid_iou):
+            iou_min = float(np.min(iou[valid_iou]))
+            pad = max(0.02, (1.0 - iou_min) * 0.15)
+            ax.set_ylim(iou_min - pad, 1.0 + pad)
+        else:
+            ax.set_ylim(-0.05, 1.05)
+        ax.legend(fontsize=10, loc='lower right')
         ax.grid(True, alpha=0.3)
 
         # Panel 8: edge deviation
@@ -446,16 +477,19 @@ def plot_timeseries(framelog_path):
                     label='Max dev (px)')
         ax.set_ylabel('Deviation (px)')
         ax.set_title('Perception: Right Edge Deviation (AI vs GT)')
-        ax.legend(fontsize=7, loc='upper right')
+        ax.legend(fontsize=10, loc='upper right')
         ax.grid(True, alpha=0.3)
 
     # Set xlabel on the last panel
     axes[-1].set_xlabel('Frame')
 
     plt.tight_layout()
-    out_path = framelog_path.replace('.csv', '_timeseries.png')
-    fig.savefig(out_path, dpi=150, bbox_inches='tight')
-    print(f"Saved: {out_path}")
+    eval_out = os.path.join(os.path.dirname(framelog_path), 'eval')
+    os.makedirs(eval_out, exist_ok=True)
+    base = os.path.join(eval_out, os.path.basename(framelog_path).replace('.csv', '_timeseries'))
+    for ext in ['png', 'pdf', 'svg']:
+        fig.savefig(f"{base}.{ext}", dpi=150, bbox_inches='tight')
+    print(f"Saved: {base}.{{png,pdf,svg}}")
     plt.close(fig)
 
 
@@ -505,7 +539,7 @@ def plot_curvature_vs_deviation(detail_path):
 
     fig, ax = plt.subplots(figsize=(8, 6))
     sc = ax.scatter(curv[mask], dists[mask],
-                    c=dists[mask], cmap='RdYlGn_r',
+                    c=dists[mask], cmap=CMAP_DEVIATION,
                     s=4, alpha=0.6)
     ax.set_xlabel('Local Curvature (1/m)')
     ax.set_ylabel('Deviation from GT (m)')
@@ -513,9 +547,12 @@ def plot_curvature_vs_deviation(detail_path):
     ax.grid(True, alpha=0.3)
     plt.colorbar(sc, ax=ax, label='Deviation (m)')
 
-    out_path = detail_path.replace('_detail.csv', '_curv_dev.png')
-    fig.savefig(out_path, dpi=150, bbox_inches='tight')
-    print(f"Saved: {out_path}")
+    eval_out = os.path.join(os.path.dirname(detail_path), 'eval')
+    os.makedirs(eval_out, exist_ok=True)
+    base = os.path.join(eval_out, os.path.basename(detail_path).replace('_detail.csv', '_curv_dev'))
+    for ext in ['png', 'pdf', 'svg']:
+        fig.savefig(f"{base}.{ext}", dpi=150, bbox_inches='tight')
+    print(f"Saved: {base}.{{png,pdf,svg}}")
     plt.close(fig)
 
 
@@ -550,7 +587,7 @@ def plot_multi_session_comparison(eval_dir):
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     fig.suptitle("Multi-Session Comparison (in-range points only)",
-                 fontsize=13, fontweight='bold')
+                 fontsize=16, fontweight='bold')
 
     x = np.arange(len(names))
 
@@ -559,7 +596,7 @@ def plot_multi_session_comparison(eval_dir):
     axes[0].set_ylabel('Mean Deviation (m)')
     axes[0].set_title('Mean Deviation')
     axes[0].set_xticks(x)
-    axes[0].set_xticklabels(names, rotation=45, ha='right', fontsize=6)
+    axes[0].set_xticklabels(names, rotation=45, ha='right', fontsize=9)
     axes[0].grid(True, alpha=0.3, axis='y')
 
     # Median deviation
@@ -567,7 +604,7 @@ def plot_multi_session_comparison(eval_dir):
     axes[1].set_ylabel('Median Deviation (m)')
     axes[1].set_title('Median Deviation')
     axes[1].set_xticks(x)
-    axes[1].set_xticklabels(names, rotation=45, ha='right', fontsize=6)
+    axes[1].set_xticklabels(names, rotation=45, ha='right', fontsize=9)
     axes[1].grid(True, alpha=0.3, axis='y')
 
     # In-range point count
@@ -575,13 +612,16 @@ def plot_multi_session_comparison(eval_dir):
     axes[2].set_ylabel('In-range Points')
     axes[2].set_title('Points within 5m of GT')
     axes[2].set_xticks(x)
-    axes[2].set_xticklabels(names, rotation=45, ha='right', fontsize=6)
+    axes[2].set_xticklabels(names, rotation=45, ha='right', fontsize=9)
     axes[2].grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()
-    out_path = os.path.join(eval_dir, "comparison_all.png")
-    fig.savefig(out_path, dpi=150, bbox_inches='tight')
-    print(f"Saved: {out_path}")
+    eval_out = os.path.join(eval_dir, "eval")
+    os.makedirs(eval_out, exist_ok=True)
+    base = os.path.join(eval_out, "comparison_all")
+    for ext in ['png', 'pdf', 'svg']:
+        fig.savefig(f"{base}.{ext}", dpi=150, bbox_inches='tight')
+    print(f"Saved: {base}.{{png,pdf,svg}}")
     plt.close(fig)
 
 
@@ -597,7 +637,6 @@ if __name__ == "__main__":
         print(f"Auto-detected: {summary_path}")
 
     plot_evaluation(summary_path)
-    plot_multi_session_comparison(eval_dir)
 
     # Auto-detect and plot latest framelog timeseries
     framelog_pattern = os.path.join(eval_dir, "framelog_*.csv")

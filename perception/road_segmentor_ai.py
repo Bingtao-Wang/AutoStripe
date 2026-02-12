@@ -15,6 +15,10 @@ import torch
 import torch.nn.functional as F
 
 # Add VLLiNet model path
+# Clear cached 'models' package (may point to LUNA-Net_carla/models from prior import)
+for _mod in list(sys.modules.keys()):
+    if _mod == 'models' or _mod.startswith('models.'):
+        del sys.modules[_mod]
 VLLINET_DIR = os.path.join(os.path.dirname(__file__), '..', 'VLLiNet_models')
 sys.path.insert(0, VLLINET_DIR)
 from models.vllinet import VLLiNet_Lite

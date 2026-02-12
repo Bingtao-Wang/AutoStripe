@@ -45,6 +45,11 @@ class TrajectoryEvaluator:
         self._output_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)))
 
+    def set_output_dir(self, path):
+        """Set output directory for CSV files."""
+        self._output_dir = path
+        os.makedirs(path, exist_ok=True)
+
     def generate_ground_truth(self, start_location):
         """Generate right road edge GT from Map API.
 
