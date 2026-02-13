@@ -1,9 +1,6 @@
 # AutoStripe: 新建高速公路自动标线系统
 
-## CARLA仿真平台 + LUNA-Net道路感知
-
----
-❯ 理解项目文档 @/home/peter/workspaces/carla-0.9.15/CARLA_0.9.15/0MyCode/AutoStripe/docs/Project_Design.md 我想在carla上做一个自动划线机系统，如何才能实现， 我们可以做一个简单的不那复杂的V1版本，有什么不清楚的咨询我，或给我启发式建议
+## CARLA仿真平台 + 多模态道路感知（GT / VLLiNet / LUNA-Net）
 
 ## 1. 项目背景
 
@@ -30,27 +27,30 @@
 ## 2. 系统架构
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  AutoLaneMarker 系统架构                  │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌──────────┐   ┌──────────────┐   ┌────────────────┐  │
-│  │ 感知模块  │──→│  规划模块     │──→│  执行模块       │  │
-│  │(LUNA-Net)│   │(Path Planner)│   │(Paint Control) │  │
-│  └──────────┘   └──────────────┘   └────────────────┘  │
-│       │                │                    │           │
-│       ▼                ▼                    ▼           │
-│  ┌──────────┐   ┌──────────────┐   ┌────────────────┐  │
-│  │ 道路分割  │   │ 标线路径生成  │   │  喷涂控制       │  │
-│  │ 边缘检测  │   │ 车道线规划    │   │  速度/流量调节   │  │
-│  │ 路面分析  │   │ 间距计算      │   │  喷头开关控制    │  │
-│  └──────────┘   └──────────────┘   └────────────────┘  │
-│                                                         │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │              定位模块 (RTK-GNSS + IMU)             │   │
-│  │              提供厘米级定位精度                      │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    AutoStripe V5 系统架构                      │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────┐   ┌──────────────┐   ┌──────────────┐  │
+│  │    感知模块       │──→│  规划模块     │──→│  执行模块     │  │
+│  │ (3-Mode Switch) │   │(Path Planner)│   │(Paint Control)│  │
+│  └─────────────────┘   └──────────────┘   └──────────────┘  │
+│       │                      │                    │          │
+│       ▼                      ▼                    ▼          │
+│  ┌─────────────────┐   ┌──────────────┐   ┌──────────────┐  │
+│  │ G键循环切换:      │   │ 视觉路径规划  │   │ 自动喷涂控制  │  │
+│  │  GT (CityScapes)│   │ 多项式外推    │   │ PD控制器      │  │
+│  │  VLLiNet (AI)   │   │ 曲率前馈      │   │ 虚实线切换    │  │
+│  │  LUNA-Net (SNE) │   │ 喷嘴距离估计  │   │ 迟滞状态机    │  │
+│  └─────────────────┘   └──────────────┘   └──────────────┘  │
+│                                                              │
+│  ┌─────────────────┐   ┌──────────────────────────────────┐  │
+│  │  评估模块 (E键)  │   │  数据采集 (collect_night_dataset) │  │
+│  │ Map API GT对比   │   │  KITTI格式 + SNE预计算            │  │
+│  │ 感知精度指标     │   │  3地图 × 4天气 = 3600帧           │  │
+│  │ 31列帧日志CSV   │   │  训练/验证 按地图划分              │  │
+│  └─────────────────┘   └──────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -67,16 +67,21 @@
 | 恶劣天气施工 | 光照自适应融合 (IAF模块) | ★★★★☆ |
 | 深度感知路面平整度 | 表面法线估计 (R-SNE) | ★★★☆☆ |
 
-### 3.2 LUNA-Net 感知输出
+### 3.2 LUNA-Net 感知输出（V5 实际实现）
 
 ```
 LUNA-Net 输入:
-  RGB图像 + 深度图 (来自车载相机 + LiDAR)
+  RGB图像 [0,1] (1248×384) + SNE表面法线 (3, 384, 1248)
+  SNE由深度相机计算: depth(H,W) + cam_param(3,4) → normal(3,H,W)
 
 LUNA-Net 输出:
-  ├── road_mask        → 可行驶路面区域 (用于确定标线范围)
-  ├── edge_map         → 路面边缘 (用于边缘线定位)
-  └── surface_normal   → 路面法线 (用于检测路面平整度)
+  └── 2-class logits → argmax → road_mask (0/255 二值掩码)
+
+VLLiNet 输入 (对比):
+  RGB (ImageNet归一化) + Depth (min-max归一化), 均为 1248×384
+
+VLLiNet 输出:
+  └── sigmoid > 0.5 → road_mask (624×192, 上采样至1248×384)
 ```
 
 ### 3.3 感知 → 标线规划 流程
@@ -115,60 +120,66 @@ Step 5: 控制喷涂执行
 | 场景4 | Town06 (多车道) | ClearDay | 多车道标线 |
 | 场景5 | 自定义地图 | Mixed | 新建公路 (无标线) |
 
-### 4.3 CARLA 仿真流程
+### 4.3 CARLA 仿真流程（实际执行）
 
 ```
-Phase 1: 数据采集
-  - 在CARLA中驾驶划线机车辆
-  - 采集 RGB + Depth + LiDAR + 语义分割GT
-  - 记录车辆位姿 (用于标线路径回放)
+Phase 1: 数据采集 ✓ (已完成)
+  - 3地图 (Town04/05/06) × 4天气 × 300帧 = 3600帧
+  - 采集 RGB + Depth(u16+float32) + SNE Normal + 语义分割GT + 标定
+  - KITTI格式，按地图划分训练/验证集
+  - 数据集: CARLA_Unified_Dataset (28GB, 压缩后1.2GB)
 
-Phase 2: 感知模型训练
-  - 用CARLA数据训练/微调 LUNA-Net
-  - 验证道路分割精度
+Phase 2: 感知模型训练 ✓ (已完成)
+  - VLLiNet: MobileNetV3 backbone, MaxF 98.33%, IoU 96.72%
+  - LUNA-Net: Swin Transformer + SNE, ClearNight F1=97.18%, IoU=94.52%
 
-Phase 3: 标线规划仿真
-  - LUNA-Net感知 → 标线路径规划
-  - 在CARLA中可视化规划的标线路径
-  - 与GT车道线对比评估
+Phase 3: 闭环仿真验证 ✓ (已完成)
+  - V1: Map API 验证控制逻辑
+  - V2: 视觉感知闭环 (语义相机GT)
+  - V3: 手动控制 + CityScapes感知
+  - V4: VLLiNet AI感知 + 多项式外推 + PD控制 + 评估系统
+  - V5: LUNA-Net三模态感知 + 夜间模式
 
-Phase 4: 闭环仿真
-  - 划线机自主行驶 + 实时感知 + 实时标线
-  - 评估标线精度、直线度、间距一致性
+Phase 4: 定量评估 ✓ (已完成)
+  - Map API GT对比 (trajectory_evaluator)
+  - 感知精度: mask IoU + edge deviation (perception_metrics)
+  - 31列帧日志CSV + 8面板时序图 + 地图可视化
 ```
 
-### 4.4 关键传感器配置
+### 4.4 关键传感器配置（V5 当前）
 
 ```python
-# CARLA 传感器配置
+# CARLA 传感器配置 (V4/V5, 匹配 setup_scene_v2.py)
 sensors = {
-    'front_camera': {
+    'front_rgb': {
         'type': 'sensor.camera.rgb',
-        'x': 2.0, 'y': 0.0, 'z': 1.5,   # 车头前方，高度1.5m
-        'pitch': -15,                      # 俯视15度，聚焦路面
-        'width': 1600, 'height': 900,
+        'x': 2.5, 'y': 0.0, 'z': 3.5,
+        'pitch': -15,
+        'width': 1248, 'height': 384,
         'fov': 90
     },
-    'depth_camera': {
+    'front_depth': {
         'type': 'sensor.camera.depth',
-        # 与RGB相机同位置
+        # 与RGB相机同位置同参数
     },
-    'lidar': {
-        'type': 'sensor.lidar.ray_cast',
-        'z': 2.0,
-        'range': 50,
-        'points_per_second': 100000,
-        'rotation_frequency': 20
+    'front_semantic': {
+        'type': 'sensor.camera.semantic_segmentation',
+        # 与RGB相机同位置同参数 (GT模式使用)
     },
-    'gnss': {
-        'type': 'sensor.other.gnss',
-        # RTK-GNSS 模拟
-    },
-    'imu': {
-        'type': 'sensor.other.imu'
+    'overhead_rgb': {
+        'type': 'sensor.camera.rgb',
+        'z': 25, 'pitch': -90,
+        'width': 1800, 'height': 1600,
+        'fov': 90
     }
 }
+
+# 相机内参 (FOV=90, 1248x384)
+# fx = fy = 1248 / (2 * tan(45°)) = 624
+# cx = 624, cy = 192
 ```
+
+**注**：V5 不使用 LiDAR，深度信息完全来自 CARLA 深度相机。
 
 ---
 
@@ -200,89 +211,103 @@ sensors = {
 
 ## 6. 技术路线
 
-### 6.1 整体技术路线
+### 6.1 整体技术路线（实际执行）
 
 ```
-阶段一: CARLA环境搭建 + 数据采集
+阶段一: CARLA环境搭建 + 数据采集 ✓
   │
-  ├── 搭建高速公路仿真场景
-  ├── 配置划线机车辆模型
-  ├── 采集多条件数据集
-  └── 生成道路分割GT
+  ├── Town04/05/06 高速公路场景
+  ├── 1248×384 相机, x=2.5, z=3.5, pitch=-15, FOV=90
+  ├── 4种天气: ClearNight/ClearDay/HeavyFoggyNight/HeavyRainFoggyNight
+  └── KITTI格式数据集 (RGB + Depth + SNE Normal + GT Mask + Calib)
   │
-阶段二: LUNA-Net 适配与训练
+阶段二: 感知模型训练 ✓
   │
-  ├── 用CARLA数据微调LUNA-Net
-  ├── 添加车道线检测分支 (可选)
-  ├── 验证道路分割精度
-  └── 优化推理速度 (实时性要求)
+  ├── VLLiNet (MobileNetV3): MaxF 98.33%, IoU 96.72%
+  ├── LUNA-Net (Swin-T + SNE): ClearNight F1=97.18%, IoU=94.52%
+  └── 三模态切换: GT / VLLiNet / LUNA-Net (G键循环)
   │
-阶段三: 标线路径规划算法
+阶段三: 闭环控制算法 ✓
   │
-  ├── 路面区域 → 道路几何参数提取
-  ├── 车道线位置计算 (等分/偏移)
-  ├── 虚线/实线模式生成
-  └── 曲线段标线路径插值
+  ├── V1: Map API + Pure Pursuit 验证
+  ├── V2: 视觉感知闭环 (语义相机)
+  ├── V3: 手动控制 + CityScapes感知
+  ├── V4: AI感知 + PD控制 + 曲率前馈 + 自动喷涂状态机
+  └── V5: LUNA-Net三模态 + 夜间模式
   │
-阶段四: 闭环仿真验证
+阶段四: 定量评估系统 ✓
   │
-  ├── 感知-规划-执行 全链路仿真
-  ├── 标线精度评估
-  ├── 多场景鲁棒性测试
-  └── 性能指标统计
+  ├── Map API GT对比 (覆盖率、横向误差)
+  ├── 感知精度 (mask IoU, edge deviation)
+  ├── 31列帧日志 + 8面板时序图
+  └── 7种地图可视化 (Nature风格, PDF/SVG矢量输出)
 ```
 
-### 6.2 评估指标
+### 6.2 评估指标（V5 实际使用）
 
-| 类别 | 指标 | 说明 |
-|------|------|------|
-| **感知** | Road F1 / IoU | 道路分割精度 |
-| **感知** | Edge Accuracy | 路面边缘检测精度 |
-| **规划** | Lateral Error (cm) | 标线横向偏移误差 |
-| **规划** | Spacing Error (cm) | 虚线间距误差 |
-| **执行** | Line Width Error (cm) | 线宽误差 |
-| **执行** | Straightness (mm/m) | 直线度 |
-| **系统** | FPS | 感知模块实时性 |
-| **系统** | Coverage Rate (%) | 标线覆盖率 |
+| 类别 | 指标 | 说明 | 实现状态 |
+|------|------|------|----------|
+| **感知** | Road F1 / IoU | 道路分割精度 | ✓ LUNA-Net F1=97.18% |
+| **感知** | mask_iou | AI vs GT 掩码交并比 | ✓ 逐帧计算 |
+| **感知** | edge_dev (px) | AI vs GT 右边缘偏差 | ✓ mean/median/max |
+| **感知** | inference_ms | 模型推理耗时 | ✓ CUDA同步计时 |
+| **规划** | Lateral Error (m) | 喷嘴到路沿横向误差 | ✓ Map API GT对比 |
+| **规划** | Coverage Rate (%) | GT路径覆盖率 | ✓ 2m阈值 |
+| **控制** | nozzle_dist (m) | 喷嘴到路沿实时距离 | ✓ 多项式外推 |
+| **控制** | driving_offset (m) | 动态驾驶偏移量 | ✓ PD+前馈控制 |
+| **系统** | FPS | 系统帧率 | ✓ HUD实时显示 |
+| **系统** | sne_time_ms | SNE计算耗时 | ✓ LUNA-Net模式 |
 
 ---
 
-## 7. 项目结构 (规划)
+## 7. 项目结构（V5 实际）
 
 ```
-AutoLaneMarker/
-├── carla_env/                  # CARLA仿真环境
-│   ├── setup_highway.py        # 高速公路场景搭建
-│   ├── spawn_marker_vehicle.py # 划线机车辆生成
-│   ├── sensor_config.py        # 传感器配置
-│   └── data_collector.py       # 数据采集脚本
-├── perception/                 # 感知模块
-│   ├── luna_net/               # LUNA-Net (从SNE-RoadSeg迁移)
-│   ├── road_segmentation.py    # 道路分割推理
-│   └── edge_detection.py       # 路面边缘检测
-├── planning/                   # 标线规划模块
-│   ├── road_geometry.py        # 道路几何参数提取
-│   ├── lane_calculator.py      # 车道线位置计算
-│   ├── line_pattern.py         # 标线模式生成 (虚线/实线)
-│   └── path_interpolation.py   # 曲线段路径插值
-├── control/                    # 执行控制模块
-│   ├── paint_controller.py     # 喷涂控制
-│   ├── vehicle_controller.py   # 车辆行驶控制
-│   └── speed_regulator.py      # 速度调节
-├── evaluation/                 # 评估模块
-│   ├── accuracy_metrics.py     # 精度评估
-│   └── visualization.py        # 结果可视化
-├── datasets/                   # 数据集
-│   ├── carla_highway/          # CARLA采集数据
-│   └── annotations/            # 标注数据
-├── configs/                    # 配置文件
-│   ├── sensor.yaml
-│   ├── marking_standard.yaml   # 标线规范参数
-│   └── training.yaml
-├── docs/                       # 文档
-│   ├── 技术方案.md
-│   └── 实验记录.md
-└── README.md
+AutoStripe/
+├── manual_painting_control_v4.py  # V5 主入口 (3模态感知 + N键夜间)
+├── manual_painting_control.py     # V3 主入口 (GT感知 + 手动控制)
+├── main_v2.py                     # V2 独立入口 (自动模式)
+├── main_v1.py                     # V1 入口 (Map API)
+├── diag_luna.py                   # LUNA-Net 独立验证脚本
+├── diag_vllinet.py                # VLLiNet 独立验证脚本
+├── carla_env/
+│   ├── setup_scene.py             # V1 场景
+│   └── setup_scene_v2.py          # V2-V5 场景: 1248×384, (2.5, 3.5, -15)
+├── perception/
+│   ├── road_segmentor.py          # GT: CityScapes颜色匹配 → 路面掩码
+│   ├── road_segmentor_ai.py       # VLLiNet: MobileNetV3 → 路面掩码
+│   ├── road_segmentor_luna.py     # LUNA-Net: Swin-T + SNE → 路面掩码
+│   ├── edge_extractor.py          # 路面掩码 → 左右边缘像素
+│   ├── depth_projector.py         # 像素+深度 → 世界坐标
+│   └── perception_pipeline.py     # 3模态切换 (PerceptionMode枚举)
+├── planning/
+│   ├── lane_planner.py            # V1 Map API规划 + 道路几何
+│   └── vision_path_planner.py     # V2-V5 视觉规划 + 多项式外推 + 曲率前馈
+├── control/
+│   ├── marker_vehicle.py          # V1 Pure Pursuit
+│   └── marker_vehicle_v2.py       # V2-V5 Pure Pursuit + 动态路径
+├── evaluation/
+│   ├── trajectory_evaluator.py    # Map API GT对比 + 8列detail CSV
+│   ├── perception_metrics.py      # mask IoU + edge deviation
+│   ├── frame_logger.py            # 31列帧日志CSV
+│   ├── visualize_eval.py          # 评估图 + 8面板时序图
+│   └── visualize_map.py           # 7种地图可视化 (Nature风格, PDF/SVG)
+├── ros_interface/
+│   ├── topic_config.py            # ROS话题常量
+│   ├── rviz_publisher.py          # RVIZ发布 + 多项式曲线
+│   └── autostripe_node.py         # V4 ROS节点 (CARLA-ROS Bridge)
+├── datasets/
+│   └── carla_highway/
+│       ├── collect_night_dataset.py    # 统一数据集采集脚本
+│       └── visualize_trajectory.py     # 轨迹可视化 (matplotlib矢量输出)
+├── VLLiNet_models/
+│   ├── models/vllinet.py          # VLLiNet_Lite 模型
+│   ├── models/backbone.py         # MobileNetV3 + LiDAREncoder
+│   └── checkpoints_carla/best_model.pth
+├── configs/rviz/                  # RVIZ布局文件
+├── launch/                        # ROS launch文件
+└── docs/
+    └── Project_Design.md          # 本文档
 ```
 
 ---
@@ -291,23 +316,28 @@ AutoLaneMarker/
 
 | # | 创新点 | 描述 |
 |---|--------|------|
-| 1 | **视觉感知驱动的自动标线** | 首次将深度学习道路分割应用于标线机自动化 |
-| 2 | **全天候施工能力** | LUNA-Net的LLEM模块支持夜间/恶劣天气施工 |
-| 3 | **CARLA仿真验证平台** | 低成本、高保真的算法验证环境 |
-| 4 | **感知-规划-执行闭环** | 从路面感知到标线执行的完整自动化链路 |
-| 5 | **多模态融合感知** | RGB + Depth + LiDAR 多传感器融合 |
+| 1 | **三模态感知切换** | GT / VLLiNet / LUNA-Net 实时切换对比，支持A/B测试 |
+| 2 | **全天候施工能力** | LUNA-Net LLEM模块支持夜间 (F1=97.18%)，4种天气预设 |
+| 3 | **SNE表面法线融合** | 深度→表面法线→道路分割，增强低光照场景鲁棒性 |
+| 4 | **闭环自动喷涂控制** | PD控制器 + 曲率前馈 + 迟滞状态机，弯道不中断喷涂 |
+| 5 | **CARLA仿真验证平台** | 完整的采集→训练→推理→评估闭环 |
+| 6 | **定量评估体系** | Map API GT对比 + 感知精度指标 + 31列帧日志 + 矢量可视化 |
 
 ---
 
-## 9. 时间规划
+## 9. 版本演进
 
-| 阶段 | 内容 | 周期 |
+| 版本 | 内容 | 状态 |
 |------|------|------|
-| Phase 1 | CARLA环境搭建 + 数据采集 | - |
-| Phase 2 | LUNA-Net适配训练 | - |
-| Phase 3 | 标线规划算法开发 | - |
-| Phase 4 | 闭环仿真 + 评估 | - |
-| Phase 5 | 论文撰写 | - |
+| V1 | Map API + Pure Pursuit 验证控制逻辑 | ✓ 已完成 |
+| V2 | 视觉感知闭环 (语义相机GT) | ✓ 已完成 |
+| V3 | 手动控制 + CityScapes感知 + 增强可视化 | ✓ 已完成 |
+| V4 | VLLiNet AI感知 + 多项式外推 + 1248×384原生分辨率 | ✓ 已完成 |
+| V4.1 | 自适应转向 + 动态偏移P控制 + 自动喷涂状态机 | ✓ 已完成 |
+| V4.2 | PD控制 + 评估系统 + 虚线模式 + 感知精度指标 | ✓ 已完成 |
+| V4.3 | 曲率前馈 + 自适应平滑 (弯道不中断喷涂) | ✓ 已完成 |
+| V5 | LUNA-Net三模态感知 + SNE + 夜间模式 | ✓ 已完成 |
+| V5+ | 数据集采集 (3600帧, 3地图×4天气) | ✓ 已完成 |
 
 ---
 
@@ -325,16 +355,13 @@ AutoLaneMarker/
 
 | 文档 | 说明 |
 |------|------|
-| `docs/Project_Design.md` | 本文档：项目设计 + 实际实现进展 |
-| `experiment_log_v1.md` | V1 实验记录（Map API 版本） |
-| `experiment_log_v2.md` | V2 实验记录（视觉感知版本，含9个调试阶段） |
-| `experiment_log_v3.md` | V3 实验记录（手动喷涂控制 + 增强可视化） |
-| `CLAUDE.md` | 项目上下文文档（供 AI 助手使用） |
+| `docs/Project_Design.md` | 本文档：项目设计 + 实际实现进展 (V1-V5) |
+| `CLAUDE.md` | 项目上下文文档（供 AI 助手使用，含完整技术参数） |
 
 ---
 
-**Last Updated**: 2026-02-09
-**Status**: V1 已完成，V2 已完成，V3 已完成，下一步：LUNA-Net 集成（V3+）
+**Last Updated**: 2026-02-13
+**Status**: V5 已完成（三模态感知 + 数据集采集），下一步：用新数据集重训练 LUNA-Net / VLLiNet
 
 ## 11. 实际实现进展
 
@@ -626,30 +653,178 @@ V2 开发过程中解决了 9 个关键问题（详见 `experiment_log_v2.md`）
 
 ---
 
-### 11.5 下一步计划
+### 11.5 V4 版本：VLLiNet AI感知 + 多项式外推（已完成）
 
-#### V3+ 短期改进
+**实现时间**：2026-02-10
+
+**核心思路**：用训练好的 VLLiNet 深度学习模型替代 CARLA 语义相机，实现真正的 AI 感知闭环。同时升级相机分辨率至 1248×384 原生匹配模型输入。
+
+#### V4 架构
+
+```
+RGB相机 (1248×384) + 深度相机
+        ↓
+  VLLiNet_Lite (MobileNetV3 backbone)
+    ├── RGB: ImageNet归一化 → [1, 3, 384, 1248]
+    └── Depth: CARLA解码 → min-max归一化 → [1, 3, 384, 1248]
+        ↓
+  sigmoid > 0.5 → 上采样至1248×384 → 路面掩码
+        ↓
+  Edge Extractor + Depth Projector → 世界坐标路沿点
+        ↓
+  Vision Path Planner + 多项式外推 (盲区距离估计)
+        ↓
+  Pure Pursuit Controller + 喷涂控制
+```
+
+#### V4 关键改进
+
+| 改进项 | V3 方案 | V4 方案 |
+|--------|---------|---------|
+| 感知 | CARLA语义相机 (GT) | VLLiNet AI模型 (MaxF 98.33%) |
+| 分辨率 | 800×600 | 1248×384 (原生匹配模型) |
+| 相机位置 | x=2.5, z=2.8 | x=1.5, z=2.4 (匹配训练数据) |
+| 距离估计 | 中位数法 | 多项式二次拟合外推 |
+| 模式切换 | 无 | G键切换 AI/GT 对比 |
+| ROS集成 | 无 | CARLA-ROS Bridge订阅 |
+
+#### V4.1 自适应控制优化
+
+- **自适应转向滤波**：横向误差大时激进(0.50)，小时平滑(0.15)
+- **动态驾驶偏移**：P控制器自动收敛喷嘴距离到目标3.0m
+- **自动喷涂状态机**：CONVERGING → STABILIZED(60帧) → PAINTING
+
+#### V4.2 PD控制 + 评估系统
+
+- **PD控制器**：微分项抑制振荡 (Kp=0.5, Kd=0.3)
+- **迟滞状态机**：进入/退出容差分离 + 宽限帧，防止抖动
+- **评估管线**：E键触发 Map API GT对比，生成CSV + 可视化
+- **虚线模式**：D键切换实线/虚线 (3m画/3m间隔)
+- **帧日志**：31列CSV记录每帧完整状态
+- **感知精度**：mask IoU + edge deviation (AI vs GT逐帧对比)
+
+#### V4.3 曲率前馈
+
+- **曲率前馈**：多项式二次系数预测前方弯道，提前增大偏移量
+- **自适应平滑**：弯道时OFFSET_SMOOTH从0.12提升至0.25
+- **效果**：消除弯道入口喷涂中断问题
+
+---
+
+### 11.6 V5 版本：LUNA-Net 三模态感知 + 夜间模式（已完成，当前版本）
+
+**实现时间**：2026-02-11
+
+**核心思路**：集成 LUNA-Net 作为第三种感知模式，利用 Swin Transformer + SNE 表面法线估计，专攻夜间/低光照场景的道路分割。
+
+#### V5 架构
+
+```
+RGB相机 (1248×384) + 深度相机
+        ↓
+  G键循环: GT → VLLiNet → LUNA-Net → GT
+        ↓
+  [LUNA-Net 模式]
+    RGB: /255.0 → [0,1] → [1, 3, 384, 1248]
+    Depth: CARLA解码 → meters → SNE → normal (3, H, W)
+    Normal: → [1, 3, 384, 1248]
+    LUNA-Net(rgb, normal, is_normal=True) → 2-class logits → argmax → mask
+        ↓
+  MASK_TOP_RATIO=0.35 裁剪 → Edge Extractor → Depth Projector
+        ↓
+  Vision Path Planner (多项式外推 + 曲率前馈)
+        ↓
+  PD Controller + 自动喷涂状态机
+```
+
+#### V5 三模态感知对比
+
+| 维度 | GT (CityScapes) | VLLiNet | LUNA-Net |
+|------|-----------------|---------|----------|
+| 输入 | 语义相机标签 | RGB+Depth | RGB+SNE Normal |
+| 骨干网络 | 无 (颜色匹配) | MobileNetV3 | Swin Transformer Tiny |
+| 输出分辨率 | 1248×384 | 624×192 (需上采样) | 1248×384 (原生) |
+| 输出格式 | 颜色阈值 | sigmoid > 0.5 | argmax 2-class |
+| 额外计算 | 无 | 无 | SNE: depth→normal (CPU) |
+| 优势场景 | 完美GT基准 | 通用道路分割 | 夜间/低光照 |
+| 精度 | 100% (GT) | MaxF 98.33% | ClearNight F1=97.18% |
+
+#### V5 关键新增
+
+| 功能 | 说明 |
+|------|------|
+| LUNA-Net感知模式 | Swin-T + LLEM + IAF + NAA decoder + Edge head |
+| SNE表面法线 | depth(H,W) + cam_param(3,4) → normal(3,H,W), CPU计算 |
+| N键夜间模式 | 切换ClearNight天气 (sun=-30, cloud=10, fog=0) |
+| 三模态循环 | G键: GT → VLLiNet → LUNA-Net → GT |
+| HUD颜色区分 | GT=白色, VLLiNet=绿色, LUNA-Net=青色 |
+| SNE计时 | 帧日志新增sne_time_ms列 (32列) |
+
+#### V5 操作说明
+
+| 按键 | 功能 |
+|------|------|
+| SPACE | 切换喷涂 ON/OFF |
+| TAB | 切换自动/手动驾驶 |
+| G | 循环感知模式 (GT → VLLiNet → LUNA-Net) |
+| N | 切换ClearNight夜间天气 |
+| D | 切换虚线/实线模式 |
+| E | 切换评估记录 (开始/停止 + GT对比) |
+| R | 切换视频录制 |
+| WASD/方向键 | 手动驾驶 |
+| V | 切换观察者跟随/自由相机 |
+| ESC | 退出 |
+
+---
+
+### 11.7 数据集采集（已完成）
+
+**采集工具**：`datasets/carla_highway/collect_night_dataset.py`
+
+#### 采集配置
+
+| 参数 | 值 |
+|------|-----|
+| 相机 | 1248×384, x=2.5, z=3.5, pitch=-15, FOV=90 |
+| 地图 | Town04 + Town05 + Town06 |
+| 天气 | ClearNight, ClearDay, HeavyFoggyNight, HeavyRainFoggyNight |
+| 帧数 | 3600 (每地图1200, 每天气300) |
+| 车辆 | vehicle.tesla.model3 + autopilot |
+| 跳帧 | 每15帧采集1帧 (可选距离跳帧3m) |
+
+#### 数据集结构
+
+```
+CARLA_Unified_Dataset/ (28GB, 压缩后1.2GB)
+├── training/        (2400帧: Town04 + Town06)
+│   ├── image_2/          # RGB PNG (1248×384, uint8)
+│   ├── depth_u16/        # 16-bit depth PNG (毫米)
+│   ├── depth_meters/     # float32 NPY (米, SNE验证用)
+│   ├── normal/           # float32 NPY (3, 384, 1248) SNE预计算
+│   ├── gt_image_2/       # 单通道二值mask PNG (road=255, bg=0)
+│   └── calib/            # KITTI标定 + 车辆位置
+└── validation/      (1200帧: Town05)
+    └── [同上]
+```
+
+文件命名：`{Map}_{Weather}_{FrameNum:06d}.{ext}`
+
+#### GT提取说明
+
+CARLA 0.9.15-dirty 使用非标准语义标签ID：
+- **Road = 1**（标准CARLA中1=Building，但0.9.15-dirty中1=Road，占47.7%）
+- **RoadLine = 24**（标准CARLA中24不存在，0.9.15-dirty中24=RoadLine，占2.1%）
+- 使用原始语义标签R通道，不经过CityScapes调色板转换
+
+---
+
+### 11.8 下一步计划
 
 | 任务 | 描述 | 优先级 |
 |------|------|--------|
-| **LUNA-Net 集成** | 替换 CARLA 语义相机为真实感知模型 | ★★★★★ |
-| **双边缘融合** | 同时使用左右边缘计算道路中心线 | ★★★★☆ |
-| **自适应深度范围** | 根据车速动态调整 MAX_DEPTH (20-50m) | ★★★☆☆ |
-| **路径平滑优化** | 使用样条插值替代滑动窗口 | ★★★☆☆ |
-
-#### V4 中期扩展
-
-| 任务 | 描述 |
-|------|------|
-| **多车道支持** | 检测多条车道线，支持车道保持和变道 |
-| **复杂场景测试** | 城市道路、路口、环岛、匝道 |
-| **障碍物避让** | 集成目标检测，动态路径重规划 |
-| **多天气条件** | 测试雨天、雾天、夜间场景 |
-
-#### V4 长期目标
-
-- 端到端学习（图像 → 转向/油门）
-- 真实车辆部署（硬件适配、实地测试）
-- 全天候作业（夜间、雨雪天气）
-- 智能决策（检测已有标线磨损，规划最优路径）
+| **重训练LUNA-Net** | 用新采集的3600帧数据集重训练，匹配当前相机参数 | ★★★★★ |
+| **重训练VLLiNet** | 同上，确保训练-测试分布一致 | ★★★★★ |
+| **多天气评估** | 在4种天气下分别运行评估，对比感知精度 | ★★★★☆ |
+| **中心线支持** | 检测道路中心线，支持中央分隔线标线 | ★★★☆☆ |
+| **真实场景迁移** | 从CARLA训练迁移到真实相机 | ★★★☆☆ |
 
