@@ -1963,10 +1963,10 @@ Weather: ClearNight
 - ✅ Forward pass 验证通过（CPU + GPU）
 - ✅ diag_luna.py 连接 CARLA 运行（模型加载 + 传感器 + 推理循环）
 - ✅ 三模式管线代码完成（perception_pipeline + main 集成）
-- ⏳ 待验证：完整 V5 管线运行（manual_painting_control_v4.py LUNA 模式）
-- ⏳ 待验证：G 键三模式切换无回归
-- ⏳ 待验证：N 键夜间天气 + LUNA-Net 分割质量
-- ⏳ 待验证：E 键录制 framelog 包含 sne_time_ms 列
+- ✅ 完整 V5 管线运行验证通过（2100+ 帧，LUNA 模式稳定）
+- ✅ G 键三模式切换无回归（GT → VLLiNet → LUNA 循环正常）
+- ✅ N 键夜间天气 + LUNA-Net 分割质量验证通过
+- ✅ 新权重 best_net_LUNA.pth 验证通过（用新采集数据集重训练）
 
 ### V5 技术突破
 

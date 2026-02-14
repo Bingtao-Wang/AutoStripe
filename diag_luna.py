@@ -51,7 +51,7 @@ from models_luna.luna_net import LUNANet
 
 # --- Constants ---
 CHECKPOINT_PATH = os.path.join(
-    LUNA_DIR, 'weights', 'best_net_LUNA_ClearNight.pth')
+    LUNA_DIR, 'best_net_LUNA.pth')
 IMG_W, IMG_H = 1248, 384
 CAM_FOV = 90
 CAM_X, CAM_Z, CAM_PITCH = 1.5, 2.4, -15

@@ -85,7 +85,7 @@ Each frame:
 - SNE input: depth (H,W) float32 meters + cam_param (3,4) float32
 - SNE output: surface normal (3, H, W) float32
 - Camera intrinsics for SNE: fx=fy=624, cx=624, cy=192 (1248x384, FOV=90)
-- Checkpoint: LUNA-Net_carla/weights/best_net_LUNA_ClearNight.pth
+- Checkpoint: LUNA-Net_carla/best_net_LUNA.pth
 - Model config: swin_tiny, use_llem=True, use_robust_sne=False, use_iaf=True
 - Model config: use_naa_decoder=True, use_edge_head=True, num_classes=2
 - ClearNight weather: sun_altitude=-30, cloudiness=10, fog_density=0

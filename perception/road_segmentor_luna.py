@@ -49,7 +49,7 @@ class RoadSegmentorLuna:
                  model_h=384, model_w=1248):
         if checkpoint_path is None:
             checkpoint_path = os.path.join(
-                LUNA_DIR, 'weights', 'best_net_LUNA_ClearNight.pth')
+                LUNA_DIR, 'best_net_LUNA.pth')
 
         self.device = torch.device(
             device if torch.cuda.is_available() else 'cpu')
