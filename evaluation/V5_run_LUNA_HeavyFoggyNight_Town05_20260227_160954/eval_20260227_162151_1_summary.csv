@@ -1,0 +1,11 @@
+metric,value
+num_paint_points,5407
+num_paint_in_range,39
+num_gt_points,1933
+mean_deviation,2.981938
+max_deviation,4.951357
+std_deviation,1.263641
+median_deviation,3.161814
+curvature_variance,0.000000
+coverage,0.001035
+coverage_threshold,2.000000

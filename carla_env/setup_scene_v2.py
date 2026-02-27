@@ -158,6 +158,24 @@ def setup_scene_v2(map_name="Town05", spawn_x=10, spawn_y=-210,
     overhead_cam.listen(_overhead_cb)
     actors.append(overhead_cam)
 
+    # --- Semantic overhead camera (for GT mask diagnostic) ---
+    sem_over_bp = bp_lib.find('sensor.camera.semantic_segmentation')
+    sem_over_bp.set_attribute("image_size_x", "1800")
+    sem_over_bp.set_attribute("image_size_y", "1600")
+    sem_over_bp.set_attribute("fov", "90")
+    sem_over_cam = world.spawn_actor(sem_over_bp, overhead_tf, attach_to=vehicle)
+    sem_over_lock, sem_over_data = _make_shared_buffer()
+
+    def _sem_overhead_cb(image):
+        image.convert(cc.CityScapesPalette)
+        arr = np.frombuffer(image.raw_data, dtype=np.uint8)
+        arr = np.reshape(arr, (image.height, image.width, 4))
+        with sem_over_lock:
+            sem_over_data["image"] = arr[:, :, :3].copy()
+
+    sem_over_cam.listen(_sem_overhead_cb)
+    actors.append(sem_over_cam)
+
     # --- Semantic LiDAR (same as V1) ---
     lidar_bp = bp_lib.find('sensor.lidar.ray_cast_semantic')
     lidar_bp.set_attribute('channels', '32')
@@ -211,6 +229,8 @@ def setup_scene_v2(map_name="Town05", spawn_x=10, spawn_y=-210,
         "_depth_data": depth_data,
         "_rgb_front_lock": rgb_front_lock,
         "_rgb_front_data": rgb_front_data,
+        "_sem_over_lock": sem_over_lock,
+        "_sem_over_data": sem_over_data,
         # Camera params (needed by depth projector)
         "front_cam_w": FRONT_CAM_W,
         "front_cam_h": FRONT_CAM_H,

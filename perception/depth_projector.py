@@ -43,7 +43,7 @@ class DepthProjector:
     """Project pixel coordinates + depth to 3D world coordinates."""
 
     # Max depth to consider valid (meters)
-    MAX_DEPTH = 50.0
+    MAX_DEPTH = 25.0
 
     def __init__(self, img_w, img_h, fov_deg):
         fov_rad = math.radians(fov_deg)

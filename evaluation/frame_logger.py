@@ -17,7 +17,7 @@ import time
 
 
 COLUMNS = [
-    'timestamp', 'frame', 'dt',
+    'timestamp', 'frame', 'dt', 'fps',
     'veh_x', 'veh_y', 'veh_yaw', 'speed',
     'nozzle_x', 'nozzle_y', 'nozzle_edge_dist', 'poly_edge_dist',
     'driving_offset', 'steer_filter', 'steer_cmd', 'throttle_cmd', 'brake_cmd',
@@ -26,6 +26,7 @@ COLUMNS = [
     'poly_coeff_a', 'poly_coeff_b', 'poly_coeff_c',
     'inference_time_ms', 'sne_time_ms',
     'mask_iou', 'edge_dev_mean_px', 'edge_dev_median_px', 'edge_dev_max_px',
+    'gt_nozzle_edge_dist',
 ]
 
 

@@ -1,0 +1,11 @@
+metric,value
+perception_mode,LUNA
+valid_frames,5411
+percept_mean_dist,3.1340
+gt_mean_dist,2.9699
+error_mean,0.1641
+error_std,0.1014
+error_median,0.1768
+error_abs_mean,0.1694
+error_abs_max,0.6071
+error_rmse,0.1929

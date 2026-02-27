@@ -1,0 +1,11 @@
+metric,value
+perception_mode,VLLiNet
+valid_frames,7307
+percept_mean_dist,3.0020
+gt_mean_dist,2.9922
+error_mean,0.0098
+error_std,0.0807
+error_median,0.0111
+error_abs_mean,0.0540
+error_abs_max,0.7194
+error_rmse,0.0813

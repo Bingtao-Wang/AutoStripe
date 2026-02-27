@@ -1,0 +1,6 @@
+Perception Mode: LUNA
+Weather: ClearNight
+Map: Town05
+Spawn: #2 (x=-247.1, y=-32.3, z=10.0, yaw=90.1)
+Frames: 6000 eval (150 warmup)
+Date: 2026-02-27 15:57:48

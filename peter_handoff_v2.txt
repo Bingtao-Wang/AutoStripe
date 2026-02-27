@@ -1,0 +1,107 @@
+【交接任务】修改experiment_runner.py支持按距离停止，并重新采集全部6组实验数据
+
+## 背景
+不同感知模式帧率差异大（GT约0.06m/帧，LUNA约0.28m/帧），用帧数停止导致各组行驶距离不一致，无法公平对比。需要改为按累计行驶里程停止。Town05一圈约1550m，统一采集1600m。
+
+## 任务清单
+
+### 第一步：修改 experiment_runner.py
+
+1) 在argparse部分添加参数：
+```python
+parser.add_argument('--distance', type=float, default=0,
+                    help='Stop after this many meters of eval driving (0=use --frames)')
+```
+
+2) 在run_experiment函数签名中添加 `target_distance=0` 参数
+
+3) 在main loop开头（eval_recording块之后），添加累计距离追踪：
+在 `eval_frame_count += 1` 之后添加：
+```python
+# Track cumulative eval distance
+if eval_frame_count == 1:
+    _prev_x, _prev_y = veh_tf.location.x, veh_tf.location.y
+    _eval_cum_dist = 0.0
+else:
+    _dx = veh_tf.location.x - _prev_x
+    _dy = veh_tf.location.y - _prev_y
+    _eval_cum_dist += math.sqrt(_dx**2 + _dy**2)
+    _prev_x, _prev_y = veh_tf.location.x, veh_tf.location.y
+```
+
+4) 修改停止条件（原第624-627行附近）：
+```python
+# --- Check stop condition ---
+if target_distance > 0:
+    if _eval_cum_dist >= target_distance:
+        print(f"\n  [F{frame_count}] Reached {_eval_cum_dist:.0f}m / {target_distance:.0f}m. Stopping...")
+        break
+elif eval_frame_count >= total_frames:
+    print(f"\n  [F{frame_count}] Reached {total_frames} eval frames. Stopping...")
+    break
+```
+
+5) 在状态打印（每100帧）中加上距离信息：
+在print行末尾加 `Dist:{_eval_cum_dist:.0f}m` （需要在eval_recording块外初始化 `_eval_cum_dist = 0.0`）
+
+6) 在main()中传递参数：
+```python
+run_experiment(
+    ...
+    target_distance=args.distance,
+)
+```
+
+7) 更新batch模式的experiments列表为全部6组：
+```python
+experiments = [
+    ('GT',      'ClearDay',            1600),
+    ('VLLiNet', 'ClearDay',            1600),
+    ('LUNA',    'ClearDay',            1600),
+    ('LUNA',    'ClearNight',          1600),
+    ('LUNA',    'HeavyFoggyNight',     1600),
+    ('LUNA',    'HeavyRainFoggyNight', 1600),
+]
+```
+batch模式中把frames改为distance传递。
+
+### 第二步：逐个运行实验
+
+按以下顺序运行（每组之间等5秒）：
+```bash
+cd /home/peter/workspaces/carla-0.9.15/CARLA_0.9.15/0MyCode/AutoStripe
+conda activate autostripe_v4
+
+python3 experiment_runner.py --mode GT --weather ClearDay --distance 1600 --spawn 2
+python3 experiment_runner.py --mode VLLiNet --weather ClearDay --distance 1600 --spawn 2
+python3 experiment_runner.py --mode LUNA --weather ClearDay --distance 1600 --spawn 2
+python3 experiment_runner.py --mode LUNA --weather ClearNight --distance 1600 --spawn 2
+python3 experiment_runner.py --mode LUNA --weather HeavyFoggyNight --distance 1600 --spawn 2
+python3 experiment_runner.py --mode LUNA --weather HeavyRainFoggyNight --distance 1600 --spawn 2
+```
+
+或者用batch模式一次跑完：
+```bash
+python3 experiment_runner.py --batch --distance 1600 --spawn 2
+```
+
+### 第三步：验证数据
+
+每组实验完成后检查：
+- framelog_*.csv 存在且有34列
+- 累计里程 >= 1550m（用veh_x,veh_y算）
+- eval_summary.csv 和 eval_detail.csv 存在
+- distance_comparison.csv 存在（非GT组）
+
+### 第四步：复制到论文项目
+```bash
+cp -r evaluation/run_*_20260226_* /home/admin1/Mycode/Master_Thesis/Ch4_/evaluation/
+```
+注意：只复制今天新生成的目录，不要覆盖旧数据。
+
+## 注意事项
+- CARLA必须已在运行且Town05已加载
+- 黄线生命周期已改为10s（确认生效）
+- 旧数据目录不要删除
+- GT模式帧率低，1600m可能需要较长时间（约28000帧）
+- 如果某组实验中断，可以单独重跑该组
