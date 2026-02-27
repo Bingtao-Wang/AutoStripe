@@ -32,7 +32,7 @@ import sys
 import time
 import math
 import pygame
-from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r, K_e, K_n
+from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r, K_e, K_n, K_f
 from pygame.locals import K_w, K_a, K_s, K_d, K_x, K_v
 from pygame.locals import K_UP, K_DOWN, K_LEFT, K_RIGHT
 
@@ -612,6 +612,59 @@ SPAWN_POINTS = {
 }
 ACTIVE_SPAWN = 2  # <-- Change this to switch spawn point
 
+# --- Weather presets (N key cycles through these) ---
+WEATHER_PRESETS = [
+    ("ClearDay", dict(sun_altitude_angle=5.0, cloudiness=10.0,
+                      precipitation=0.0, precipitation_deposits=0.0,
+                      wind_intensity=5.0, fog_density=0.0,
+                      fog_distance=100.0, wetness=0.0)),
+    ("ClearNight", dict(sun_altitude_angle=-30.0, cloudiness=10.0,
+                        fog_density=0.0)),
+    ("HeavyFoggyNight", dict(sun_altitude_angle=-30.0, cloudiness=80.0,
+                             fog_density=80.0, fog_distance=10.0,
+                             wetness=50.0)),
+    ("HeavyRainFoggyNight", dict(sun_altitude_angle=-30.0, cloudiness=90.0,
+                                 precipitation=90.0, precipitation_deposits=80.0,
+                                 wind_intensity=80.0, fog_density=60.0,
+                                 fog_distance=15.0, wetness=100.0)),
+]
+
+# --- Screenshot directory ---
+SCREENSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'evaluation', 'image_vis')
+
+
+def save_screenshot(pg_screen, overhead_img, depth_color,
+                    perception_mode_str, weather_str):
+    """Save front/overhead/depth views as lossless PNGs for paper figures.
+
+    Files: snap_{mode}_{weather}_{timestamp}_{view}.png
+    Output dir: evaluation/image_vis/
+    """
+    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    mode = perception_mode_str.replace("-", "")  # e.g. "LUNA", "GT", "VLLINET"
+    prefix = f"snap_{mode}_{weather_str}_{ts}"
+
+    # Front view: pygame surface -> numpy -> BGR -> imwrite
+    front_arr = pygame.surfarray.array3d(pg_screen)          # (W, H, 3) RGB
+    front_bgr = cv2.cvtColor(front_arr.swapaxes(0, 1), cv2.COLOR_RGB2BGR)
+    front_path = os.path.join(SCREENSHOT_DIR, f"{prefix}_front.png")
+    cv2.imwrite(front_path, front_bgr)
+
+    # Overhead view
+    if overhead_img is not None:
+        oh_path = os.path.join(SCREENSHOT_DIR, f"{prefix}_overhead.png")
+        cv2.imwrite(oh_path, overhead_img)
+
+    # Depth colormap
+    if depth_color is not None:
+        dep_path = os.path.join(SCREENSHOT_DIR, f"{prefix}_depth.png")
+        cv2.imwrite(dep_path, depth_color)
+
+    saved = 1 + (overhead_img is not None) + (depth_color is not None)
+    print(f"\n  [Snap] {saved} images saved -> {SCREENSHOT_DIR}/{prefix}_*.png\n")
+
 
 def main():
     sp = SPAWN_POINTS[ACTIVE_SPAWN]
@@ -624,7 +677,7 @@ def main():
     print("  SPACE - Toggle painting ON/OFF")
     print("  TAB   - Toggle Auto/Manual drive")
     print("  G     - Cycle perception (GT/VLLiNet/LUNA)")
-    print("  N     - Toggle ClearNight weather")
+    print("  N     - Cycle weather (Day/Night/Fog/Rain)")
     print("  R     - Toggle video recording")
     print("  ESC   - Quit")
     print("\nStarting...\n")
@@ -640,7 +693,8 @@ def main():
     # V5: Three-mode perception (GT / VLLiNet / LUNA-Net)
     PERCEPTION_MODES = [PerceptionMode.GT, PerceptionMode.VLLINET, PerceptionMode.LUNA]
     perception_mode = PerceptionMode.LUNA  # V5 default
-    night_weather = False  # N key toggle
+    weather_idx = 0  # N key cycles WEATHER_PRESETS
+    current_weather = WEATHER_PRESETS[0][0]  # tracks weather for screenshot filenames
 
     try:
         # 1. Setup scene
@@ -984,6 +1038,7 @@ def main():
             recorder.write_overhead(overhead_img)
 
             # --- Depth camera visualization (diagnostic) ---
+            depth_color = None
             if depth_data is not None:
                 from perception.depth_projector import decode_depth_image
                 depth_m = decode_depth_image(depth_data)
@@ -1040,26 +1095,15 @@ def main():
                         print(f"  Perception: {perception_mode}")
                         print(f"{'='*50}\n")
                     elif event.key == K_n:
-                        # V5: toggle ClearNight weather
-                        night_weather = not night_weather
+                        # V5: cycle through 4 weather presets
+                        weather_idx = (weather_idx + 1) % len(WEATHER_PRESETS)
+                        current_weather, w_params = WEATHER_PRESETS[weather_idx]
                         weather = world.get_weather()
-                        if night_weather:
-                            weather.sun_altitude_angle = -30.0
-                            weather.cloudiness = 10.0
-                            weather.fog_density = 0.0
-                        else:
-                            weather.sun_altitude_angle = 5.0
-                            weather.cloudiness = 10.0
-                            weather.precipitation = 0.0
-                            weather.precipitation_deposits = 0.0
-                            weather.wind_intensity = 5.0
-                            weather.fog_density = 0.0
-                            weather.fog_distance = 100.0
-                            weather.wetness = 0.0
+                        for attr, val in w_params.items():
+                            setattr(weather, attr, val)
                         world.set_weather(weather)
-                        w_str = "ClearNight" if night_weather else "ClearDay"
                         print(f"\n{'='*50}")
-                        print(f"  Weather: {w_str}")
+                        print(f"  Weather: {current_weather} ({weather_idx+1}/{len(WEATHER_PRESETS)})")
                         print(f"{'='*50}\n")
                     elif event.key == K_e:
                         if evaluator is None:
@@ -1093,6 +1137,9 @@ def main():
                     elif event.key == K_d and paint_ctrl.auto_drive:
                         # D key: toggle dash mode (only in AUTO drive)
                         paint_ctrl.toggle_dash_mode()
+                    elif event.key == K_f:
+                        save_screenshot(pg_screen, overhead_img, depth_color,
+                                        str(perception_mode), current_weather)
 
             if should_exit:
                 print("\nExiting...")
@@ -1146,7 +1193,7 @@ def main():
                  (255, 165, 0)),
                 ("Cam: FOLLOW" if spectator_follow else "Cam: FREE",
                  (0, 200, 255) if spectator_follow else (255, 150, 0)),
-                ("TAB=Mode SPACE=Paint G=Perc N=Night R=Rec", (200, 200, 200)),
+                ("TAB=Mode SPACE=Paint G=Perc N=Night R=Rec F=Snap", (200, 200, 200)),
                 ("D=Dash E=EvalRec V=Cam WASD=Drive ESC=Quit", (200, 200, 200)),
             ]
             for i, (text, color) in enumerate(lines):

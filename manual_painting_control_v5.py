@@ -34,7 +34,7 @@ import sys
 import time
 import math
 import pygame
-from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r, K_e, K_n
+from pygame.locals import K_ESCAPE, K_SPACE, K_TAB, K_q, K_g, K_r, K_e, K_n, K_f
 from pygame.locals import K_w, K_a, K_s, K_d, K_x, K_v
 from pygame.locals import K_UP, K_DOWN, K_LEFT, K_RIGHT
 
@@ -393,7 +393,7 @@ def draw_status_overlay(img, painting_enabled, frame_count, speed, edge_dist_r,
     # Vehicle status
     cv2.putText(img, f"Speed: {speed:.1f} m/s", (20, 180),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)
-    cv2.putText(img, f"Nozzle-Edge: {edge_dist_r:.1f}m", (20, 240),
+    cv2.putText(img, f"Nozzle-Edge: {edge_dist_r - 0.1:.1f}m", (20, 240),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 255, 0), 4)
 
     # Polynomial distance
@@ -671,6 +671,39 @@ def resolve_perception_mode(mode_str):
         raise ValueError(f"Unknown perception mode: {mode_str}")
 
 
+# N key cycles through these in order
+WEATHER_CYCLE = ['ClearDay', 'ClearNight', 'HeavyFoggyNight', 'HeavyRainFoggyNight']
+
+# --- Screenshot directory ---
+SCREENSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'evaluation', 'image_vis', 'snapshots')
+
+
+def save_screenshot(pg_screen, overhead_img, depth_color,
+                    perception_mode_str, weather_str):
+    """Save front/overhead/depth views as lossless PNGs for paper figures."""
+    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    mode = perception_mode_str.replace("-", "")
+    prefix = f"snap_{mode}_{weather_str}_{ts}"
+
+    front_arr = pygame.surfarray.array3d(pg_screen)
+    front_bgr = cv2.cvtColor(front_arr.swapaxes(0, 1), cv2.COLOR_RGB2BGR)
+    front_path = os.path.join(SCREENSHOT_DIR, f"{prefix}_front.png")
+    cv2.imwrite(front_path, front_bgr)
+
+    if overhead_img is not None:
+        oh_path = os.path.join(SCREENSHOT_DIR, f"{prefix}_overhead.png")
+        cv2.imwrite(oh_path, overhead_img)
+
+    if depth_color is not None:
+        dep_path = os.path.join(SCREENSHOT_DIR, f"{prefix}_depth.png")
+        cv2.imwrite(dep_path, depth_color)
+
+    saved = 1 + (overhead_img is not None) + (depth_color is not None)
+    print(f"\n  [Snap] {saved} images saved -> {SCREENSHOT_DIR}/{prefix}_*.png\n")
+
+
 def _write_distance_comparison(run_dir, perception_mode):
     """Write nozzle-edge distance comparison summary (percept vs GT)."""
     framelog_files = glob.glob(os.path.join(run_dir, 'framelog_*.csv'))
@@ -765,7 +798,8 @@ def main():
     # V5: Three-mode perception (GT / VLLiNet / LUNA-Net)
     PERCEPTION_MODES = [PerceptionMode.GT, PerceptionMode.VLLINET, PerceptionMode.LUNA]
     perception_mode = resolve_perception_mode(args.mode)
-    night_weather = False  # N key toggle
+    weather_idx = 0  # N key cycles WEATHER_CYCLE
+    current_weather = WEATHER_CYCLE[0]
 
     try:
         # 1. Setup scene
@@ -1168,6 +1202,7 @@ def main():
             recorder.write_overhead(overhead_img)
 
             # --- Depth camera visualization (diagnostic) ---
+            depth_color = None
             if depth_data is not None:
                 from perception.depth_projector import decode_depth_image
                 depth_m = decode_depth_image(depth_data)
@@ -1224,26 +1259,12 @@ def main():
                         print(f"  Perception: {perception_mode}")
                         print(f"{'='*50}\n")
                     elif event.key == K_n:
-                        # V5: toggle ClearNight weather
-                        night_weather = not night_weather
-                        weather = world.get_weather()
-                        if night_weather:
-                            weather.sun_altitude_angle = -30.0
-                            weather.cloudiness = 10.0
-                            weather.fog_density = 0.0
-                        else:
-                            weather.sun_altitude_angle = 5.0
-                            weather.cloudiness = 10.0
-                            weather.precipitation = 0.0
-                            weather.precipitation_deposits = 0.0
-                            weather.wind_intensity = 5.0
-                            weather.fog_density = 0.0
-                            weather.fog_distance = 100.0
-                            weather.wetness = 0.0
-                        world.set_weather(weather)
-                        w_str = "ClearNight" if night_weather else "ClearDay"
+                        # V5: cycle through 4 weather presets
+                        weather_idx = (weather_idx + 1) % len(WEATHER_CYCLE)
+                        current_weather = WEATHER_CYCLE[weather_idx]
+                        set_weather(world, current_weather)
                         print(f"\n{'='*50}")
-                        print(f"  Weather: {w_str}")
+                        print(f"  Weather: {current_weather} ({weather_idx+1}/{len(WEATHER_CYCLE)})")
                         print(f"{'='*50}\n")
                     elif event.key == K_e:
                         if evaluator is None:
@@ -1277,6 +1298,9 @@ def main():
                     elif event.key == K_d and paint_ctrl.auto_drive:
                         # D key: toggle dash mode (only in AUTO drive)
                         paint_ctrl.toggle_dash_mode()
+                    elif event.key == K_f:
+                        save_screenshot(pg_screen, overhead_img, depth_color,
+                                        str(perception_mode), current_weather)
 
             if should_exit:
                 print("\nExiting...")
@@ -1317,7 +1341,7 @@ def main():
                  + (f" ({paint_ctrl._dash_accum:.1f}m)" if paint_ctrl.dash_mode else ""),
                  (0, 200, 255) if paint_ctrl.dash_mode else (200, 200, 200)),
                 (f"Speed: {speed:.1f} m/s", (255, 255, 255)),
-                (f"Nozzle-Edge: {edge_dist_r:.1f}m", (0, 255, 0)),
+                (f"Nozzle-Edge: {edge_dist_r - 0.1:.1f}m", (0, 255, 0)),
                 (f"Poly-Edge: {poly_dist:.1f}m" if poly_dist else "Poly-Edge: N/A",
                  (255, 0, 255)),
                 (f"Offset: {planner.driving_offset:.1f}m  SteerF: {controller._effective_steer_filter:.2f}",
@@ -1330,7 +1354,7 @@ def main():
                  (255, 165, 0)),
                 ("Cam: FOLLOW" if spectator_follow else "Cam: FREE",
                  (0, 200, 255) if spectator_follow else (255, 150, 0)),
-                ("TAB=Mode SPACE=Paint G=Perc N=Night R=Rec", (200, 200, 200)),
+                ("TAB=Mode SPACE=Paint G=Perc N=Weather R=Rec F=Snap", (200, 200, 200)),
                 ("D=Dash E=EvalRec V=Cam WASD=Drive ESC=Quit", (200, 200, 200)),
             ]
             for i, (text, color) in enumerate(lines):
@@ -1452,15 +1476,6 @@ def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
 
     img = overhead_data.copy()
 
-    # GT road mask overlay from semantic overhead camera
-    if sem_over_data is not None:
-        from perception.road_segmentor import RoadSegmentor
-        _seg = RoadSegmentor()
-        oh_mask = _seg.segment(sem_over_data)
-        mask_overlay = np.zeros_like(img)
-        mask_overlay[oh_mask > 0] = [255, 255, 255]
-        img = cv2.addWeighted(img, 0.5, mask_overlay, 0.5, 0)
-
     # Yellow paint trail overlay
     trail = paint_ctrl.paint_trail
     if len(trail) >= 2:
@@ -1545,7 +1560,7 @@ def _render_overhead(overhead_data, paint_ctrl, veh_tf, world,
     # Distance text overlays
     if nozzle_mid is not None:
         npx, npy = world_to_pixel(nozzle_mid.x, nozzle_mid.y, veh_tf)
-        cv2.putText(img, f"{edge_dist_r:.1f}m", (npx, npy),
+        cv2.putText(img, f"{edge_dist_r - 0.1:.1f}m", (npx, npy),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
 
     drive_mode = "AUTO" if paint_ctrl.auto_drive else "MANUAL"
@@ -1609,16 +1624,13 @@ def _render_front_view(pg_screen, rgb_front, road_mask, scene,
     if rgb_front is None:
         return
 
-    # --- Road mask diagnostic view ---
-    # Show road mask as base: road=white, non-road=black, with RGB blended
+    # --- Green road mask overlay (V4 style) ---
+    front_display = rgb_front[:, :, :3].copy()
     if road_mask is not None:
-        mask_vis = np.zeros_like(rgb_front[:, :, :3])
-        mask_vis[road_mask > 0] = [255, 255, 255]
-        # Blend: 40% RGB + 60% mask so road boundary is clearly visible
+        mask_overlay = np.zeros_like(front_display)
+        mask_overlay[road_mask > 0] = [0, 255, 0]
         front_display = cv2.addWeighted(
-            rgb_front[:, :, :3], 0.4, mask_vis, 0.6, 0)
-    else:
-        front_display = rgb_front[:, :, :3].copy()
+            front_display, 0.7, mask_overlay, 0.3, 0)
 
     # Distance text on front view
     rgb_cam_tf = scene['rgb_front_cam'].get_transform()
@@ -1628,13 +1640,13 @@ def _render_front_view(pg_screen, rgb_front, road_mask, scene,
         if fp is not None:
             fpx, fpy = fp
             if 0 <= fpx < FRONT_CAM_W and 0 <= fpy < FRONT_CAM_H:
-                cv2.putText(front_display, f"{edge_dist_r:.1f}m",
+                cv2.putText(front_display, f"{edge_dist_r - 0.1:.1f}m",
                             (fpx, fpy), cv2.FONT_HERSHEY_SIMPLEX,
                             1.0, (0, 255, 0), 3)
 
-    # --- 2D overlay: edge dots, path dots, poly curve (AI mode) ---
+    # --- 2D overlay: edge dots, path dots, poly curve ---
     rgb_cam_tf = scene['rgb_front_cam'].get_transform()
-    if use_ai and veh_tf is not None:
+    if veh_tf is not None:
         # Red dots: right road edge (direct 2D pixels, no 3D round-trip)
         if right_px:
             for u, v in right_px:
@@ -1682,8 +1694,8 @@ def _render_front_view(pg_screen, rgb_front, road_mask, scene,
                     cv2.line(front_display, poly_pts[i], poly_pts[i+1],
                              (255, 0, 255), 2)
 
-    # --- 2D distance line segments (AI mode) ---
-    if use_ai and veh_tf is not None:
+    # --- 2D distance line segments ---
+    if veh_tf is not None:
         rgb_cam_tf = scene['rgb_front_cam'].get_transform()
 
         # Green line: nozzle -> road edge
