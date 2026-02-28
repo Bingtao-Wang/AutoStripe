@@ -146,12 +146,13 @@ class AutoPaintStateMachine:
     STATE_CONVERGING = "CONVERGING"
     STATE_STABILIZED = "STABILIZED"
     STATE_PAINTING = "PAINTING"
-    GRACE_LIMIT = 300
-    STABILIZED_GRACE = 100
+    GRACE_LIMIT = 50
+    STABILIZED_GRACE = 30
     CURV_LO = 0.004
     CURV_HI = 0.010
-    TOL_ENTER_CURVE = 0.55
-    TOL_EXIT_CURVE = 0.80
+    TOL_ENTER_CURVE = 0.40
+    TOL_EXIT_CURVE = 0.50
+    CURVE_GRACE_DIVISOR = 3   # curve grace = GRACE_LIMIT // 3
 
     def __init__(self, target_dist=3.0, tolerance_enter=0.3,
                  tolerance_exit=0.45, stability_frames=30, min_speed=1.0):
@@ -184,6 +185,14 @@ class AutoPaintStateMachine:
         in_exit = error < tol_exit
         speed_ok = speed > self.min_speed
 
+        # Curve-adaptive grace: shorter tolerance in curves
+        in_curve = (poly_coeff_a is not None and
+                    abs(poly_coeff_a) > self.CURV_LO)
+        eff_grace = (self.GRACE_LIMIT // self.CURVE_GRACE_DIVISOR
+                     if in_curve else self.GRACE_LIMIT)
+        eff_stab_grace = (self.STABILIZED_GRACE // self.CURVE_GRACE_DIVISOR
+                          if in_curve else self.STABILIZED_GRACE)
+
         if self.state == self.STATE_CONVERGING:
             if in_enter and speed_ok:
                 self.state = self.STATE_STABILIZED
@@ -196,7 +205,7 @@ class AutoPaintStateMachine:
                 self._grace_count = 0
             elif not in_exit:
                 self._grace_count += 1
-                if self._grace_count >= self.STABILIZED_GRACE:
+                if self._grace_count >= eff_stab_grace:
                     self.state = self.STATE_CONVERGING
                     self._stable_count = 0
                     self._grace_count = 0
@@ -213,7 +222,7 @@ class AutoPaintStateMachine:
                 self._grace_count = 0
             elif not in_exit:
                 self._grace_count += 1
-                if self._grace_count >= self.GRACE_LIMIT:
+                if self._grace_count >= eff_grace:
                     self.state = self.STATE_CONVERGING
                     self._stable_count = 0
                     self._grace_count = 0
@@ -363,8 +372,8 @@ def run_experiment(mode_str, weather_name, total_frames, spawn_id,
 
         # 4. Auto-paint state machine
         auto_paint = AutoPaintStateMachine(
-            target_dist=3.0, tolerance_enter=0.3, tolerance_exit=0.55,
-            stability_frames=150, min_speed=1.0)
+            target_dist=3.0, tolerance_enter=0.3, tolerance_exit=0.44,
+            stability_frames=50, min_speed=1.0)
 
         # 5. Evaluator + frame logger
         evaluator = TrajectoryEvaluator(scene['map'])
@@ -382,7 +391,7 @@ def run_experiment(mode_str, weather_name, total_frames, spawn_id,
         poly_dist_history = []
         POLY_SMOOTH_WINDOW = 20
         PERCEPT_INTERVAL = 3
-        NED_SMOOTH_WINDOW = 150
+        NED_SMOOTH_WINDOW = 40
         ned_history = []
         cached_result = None
         cached_road_mask = None
@@ -396,7 +405,7 @@ def run_experiment(mode_str, weather_name, total_frames, spawn_id,
         # 7. Create run directory + start eval recording
         run_ts = time.strftime("%Y%m%d_%H%M%S")
         map_name = sp.get('map', 'Town05')
-        run_name = f"V5_run_{perception_mode}_{weather_name}_{map_name}_{run_ts}"
+        run_name = f"V5.1_run_{perception_mode}_{weather_name}_{map_name}_{run_ts}"
         run_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             'evaluation', run_name)
@@ -425,6 +434,8 @@ def run_experiment(mode_str, weather_name, total_frames, spawn_id,
         fps_history = []
         _eval_cum_dist = 0.0
         _prev_x, _prev_y = 0.0, 0.0
+        # State tracking for summary
+        _state_counts = {'CONVERGING': 0, 'STABILIZED': 0, 'PAINTING': 0}
 
         while True:
             frame_count += 1
@@ -567,6 +578,7 @@ def run_experiment(mode_str, weather_name, total_frames, spawn_id,
             # --- Per-frame logging ---
             if eval_recording and frame_logger.active:
                 eval_frame_count += 1
+                _state_counts[auto_paint.state] = _state_counts.get(auto_paint.state, 0) + 1
 
                 # Track cumulative eval distance
                 if eval_frame_count == 1:
@@ -666,6 +678,16 @@ def run_experiment(mode_str, weather_name, total_frames, spawn_id,
         print("  Stopping eval recording...")
         frame_logger.stop()
 
+        # --- State distribution summary ---
+        paint_pct = 0.0
+        if eval_frame_count > 0:
+            paint_pct = _state_counts.get('PAINTING', 0) / eval_frame_count * 100
+            print(f"\n  [State Distribution] {eval_frame_count} eval frames:")
+            for st in ['PAINTING', 'STABILIZED', 'CONVERGING']:
+                cnt = _state_counts.get(st, 0)
+                pct = cnt / eval_frame_count * 100
+                print(f"    {st:12s}: {cnt:6d} ({pct:5.1f}%)")
+
         segment = paint_trail[eval_trail_start_idx:]
         gt_segment = gt_paint_trail[eval_trail_start_idx:]
 
@@ -679,6 +701,19 @@ def run_experiment(mode_str, weather_name, total_frames, spawn_id,
         # Eval 2: Per-frame nozzle-edge distance comparison summary
         if eval_frame_count > 0:
             _write_distance_comparison(run_dir, perception_mode)
+
+        # Rename run_dir to include painting percentage
+        if eval_frame_count > 0:
+            pct_str = f"{paint_pct:.0f}"
+            new_run_name = f"V5.1_{pct_str}_run_{perception_mode}_{weather_name}_{map_name}_{run_ts}"
+            new_run_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                'evaluation', new_run_name)
+            try:
+                os.rename(run_dir, new_run_dir)
+                run_dir = new_run_dir
+            except OSError as e:
+                print(f"  Rename failed: {e}")
 
         print(f"\n  Experiment complete!")
         print(f"  Output: {run_dir}")

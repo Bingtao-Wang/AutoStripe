@@ -271,7 +271,7 @@ class ManualPaintingControl:
                     self.last_nozzle_loc, nozzle_loc,
                     thickness=0.3,
                     color=carla.Color(255, 255, 0),
-                    life_time=10.0,
+                    life_time=300.0,
                     persistent_lines=True
                 )
                 self.paint_trail.append((nozzle_loc.x, nozzle_loc.y))
@@ -283,7 +283,7 @@ class ManualPaintingControl:
                 self.last_nozzle_loc, nozzle_loc,
                 thickness=0.3,
                 color=carla.Color(255, 255, 0),
-                life_time=10.0,
+                life_time=300.0,
                 persistent_lines=True
             )
             self.paint_trail.append((nozzle_loc.x, nozzle_loc.y))
