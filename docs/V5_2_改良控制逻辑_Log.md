@@ -430,26 +430,77 @@ eff_grace = GRACE_LIMIT // 3 if in_curve else GRACE_LIMIT  # 60 → 20
 
 直道 grace=60 不变（保护直道系统性偏差不误触发），弯道 grace=20（更敏感）。
 
-### 9.7 当前参数（V5.1）
+### 9.7 后续调优（R10-R12）
+
+R7-R9 弯道容差收紧无效后，转向 NED 滤波 + grace + 容差联合调优：
+
+| 轮次 | NED_SMOOTH | tol_exit | GRACE | stab_frames | 条件 | 结果 |
+|------|-----------|----------|-------|-------------|------|------|
+| R10 | 关闭 | 0.30 | 30 | 50 | HeavyFoggy | 64%（过敏，全圈中断） |
+| R11 | 15 | 0.40 | 30 | 50 | HeavyFoggy | 82%（偏低） |
+| R12 | 30 | 0.44 | 50 | 50 | HeavyFoggy | **91%** ✓ |
+| R12 | 40 | 0.44 | 50 | 50 | HeavyRainFoggy | **88%** ✓ |
+
+R10 关闭 NED 滤波后，原始 NED 波动 ±0.3-0.4m 导致全圈频繁中断（27次状态切换）。
+R11 恢复 15 帧滤波仍不够，82% 偏低。
+R12 NED=30 + tol_exit=0.44 + GRACE=50 达到 HeavyFoggy 91%。
+HeavyRainFoggyNight 将 NED 提升到 40 帧后达到 88%。
+
+### 9.8 V5.1 验证实验结果
+
+#### LUNA + HeavyFoggyNight（NED=30, tol_exit=0.44, GRACE=50）
+
+| 指标 | 值 |
+|------|-----|
+| 总帧数 | 5342 |
+| PAINTING | 4867 (91.1%) |
+| STABILIZED | 50 (0.9%) |
+| CONVERGING | 425 (8.0%) |
+| Percept mean dist | 3.138m |
+| GT mean dist | 2.975m |
+| Error RMSE | 0.182m |
+
+#### LUNA + HeavyRainFoggyNight（NED=40, tol_exit=0.44, GRACE=50）
+
+| 指标 | 值 |
+|------|-----|
+| 总帧数 | 5297 |
+| PAINTING | 4669 (88.1%) |
+| STABILIZED | 250 (4.7%) |
+| CONVERGING | 378 (7.1%) |
+| Percept mean dist | 3.168m |
+| GT mean dist | 3.093m |
+| Error RMSE | 0.249m |
+| Error abs max | 2.992m（瞬间感知失效） |
+
+### 9.9 当前参数（V5.1 最终）
 
 | 参数 | 手动模式 | Headless 原值 | V5.1 当前值 |
 |------|----------|---------------|-------------|
-| `NED_SMOOTH_WINDOW` | 15 | 150 | 50 |
-| `GRACE_LIMIT` | 30 | 300 | 60（弯道 ÷3 = 20） |
+| `NED_SMOOTH_WINDOW` | 15 | 150 | 40 |
+| `GRACE_LIMIT` | 30 | 300 | 50（弯道 ÷3 ≈ 16） |
 | `STABILIZED_GRACE` | 10 | 100 | 30（弯道 ÷3 = 10） |
-| `tolerance_exit` | 0.45 | 0.55 | 0.50 |
+| `tolerance_exit` | 0.45 | 0.55 | 0.44 |
+| `tolerance_enter` | 0.30 | 0.30 | 0.30 |
 | `stability_frames` | 30 | 150 | 50 |
 | `TOL_ENTER_CURVE` | 0.55 | 0.55 | 0.40 |
 | `TOL_EXIT_CURVE` | 0.80 | 0.80 | 0.50 |
 | `CURVE_GRACE_DIVISOR` | — | — | 3（新增） |
 
-### 9.8 待验证
+### 9.10 代码变更
 
-- [ ] 弯道自适应 Grace 方案 HeavyFoggyNight 1600m 验证
-- [ ] 确认 GT + ClearDay 仍为 ~100%
-- [ ] 确认 LUNA + ClearNight 仍为 ~100%
-- [ ] HeavyRainFoggyNight 验证（预期 painting% < HeavyFoggyNight）
-- [ ] 全部 6 组批量实验重跑
+| 文件 | 变更 |
+|------|------|
+| `experiment_runner_v5.py` | 状态机参数调优；弯道自适应 grace；状态分布统计；目录自动命名含 painting% |
+| `docs/V5_2_改良控制逻辑_Log.md` | V5.1 调优全过程记录 |
+| `manual_painting_control_v5.py` | paint line life_time 10s→300s |
+
+### 9.11 待完成
+
+- [ ] LUNA + ClearNight 1600m 验证（预期 ~100%）
+- [ ] GT + ClearDay 验证（预期 ~100%）
+- [ ] VLLiNet + ClearDay 验证（预期 ~100%）
+- [ ] 全部 6 组批量实验统一参数重跑
 
 ## 十、后续方向
 
