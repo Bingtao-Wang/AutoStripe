@@ -69,6 +69,13 @@ class PerceptionPipeline:
         """Backward-compatible property: True for any AI mode."""
         return self._mode in (PerceptionMode.VLLINET, PerceptionMode.LUNA)
 
+    @property
+    def last_normal(self):
+        """V6: SNE surface normal from LUNA mode, else None."""
+        if self._mode == PerceptionMode.LUNA:
+            return getattr(self.segmentor, 'last_normal', None)
+        return None
+
     def process_frame(self, semantic_bgra, depth_bgra, camera_transform,
                        cityscapes_bgra=None, rgb_bgra=None):
         """Run full perception pipeline on one frame.

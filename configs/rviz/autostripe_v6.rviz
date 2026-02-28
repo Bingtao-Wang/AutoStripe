@@ -1,0 +1,55 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+      Splitter Ratio: 0.5
+  - Class: rviz/Views
+    Name: Views
+
+Visualization Manager:
+  Class: ""
+  Displays:
+    # --- Panel 1: Front Camera + Edge Overlay ---
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /autostripe/v6/front_overlay
+      Name: "Front Overlay"
+      Queue Size: 1
+      Transport Hint: raw
+      Value: true
+
+    # --- Panel 2: SNE Normal / Depth Heatmap ---
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /autostripe/v6/perception_detail
+      Name: "Perception Detail"
+      Queue Size: 1
+      Transport Hint: raw
+      Value: true
+
+    # --- Panel 3: Overhead Bird's Eye ---
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /autostripe/v6/overhead
+      Name: "Overhead"
+      Queue Size: 1
+      Transport Hint: raw
+      Value: true
+
+    # --- 2D Map ---
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /autostripe/v6/map_roads
+      Name: "2D Map"
+      Queue Size: 1
+      Transport Hint: raw
+      Value: true
+
+  Enabled: true
+  Global Options:
+    Background Color: 30; 30; 30
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Value: true

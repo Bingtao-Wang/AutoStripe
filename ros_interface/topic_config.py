@@ -25,6 +25,13 @@ TOPIC_STATUS_TEXT = "/autostripe/control/status_text"
 # LiDAR
 TOPIC_LIDAR_POINTS = "/autostripe/lidar/points"
 
+# V6: RViz image topics
+TOPIC_V6_FRONT_OVERLAY = "/autostripe/v6/front_overlay"
+TOPIC_V6_PERCEPTION_DETAIL = "/autostripe/v6/perception_detail"
+TOPIC_V6_OVERHEAD = "/autostripe/v6/overhead"
+TOPIC_V6_MAP_ROADS = "/autostripe/v6/map_roads"
+TOPIC_V6_DASHBOARD = "/autostripe/v6/dashboard"
+
 # --- Frame IDs ---
 FRAME_MAP = "map"
 FRAME_VEHICLE = "ego_vehicle"

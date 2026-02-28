@@ -57,6 +57,7 @@ class RoadSegmentorLuna:
         self.model_w = model_w
         self.last_inference_ms = 0.0
         self.last_sne_ms = 0.0
+        self.last_normal = None  # V6: expose SNE output for RViz visualization
 
         # Camera intrinsics (3x4 matrix for SNE)
         # fx=fy=624 for 1248px width, FOV=90
@@ -193,7 +194,9 @@ class RoadSegmentorLuna:
         with torch.no_grad():
             normal = self.sne(depth_t, cam_t)  # (3, H, W)
         self.last_sne_ms = (time.time() - t0) * 1000.0
-        return normal.numpy()
+        result = normal.numpy()
+        self.last_normal = result  # V6: store for RViz visualization
+        return result
 
     def _preprocess_rgb(self, bgra):
         """BGRA -> RGB tensor [1, 3, H, W] in [0, 1]."""

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!-- AutoStripe V6 launch file: RViz-only (V6 publishes directly, no Bridge needed) -->
+  <!-- Usage: roslaunch autostripe autostripe_v6.launch -->
+
+  <!-- Arguments -->
+  <arg name="rviz_config" default="$(find autostripe)/configs/rviz/autostripe_v6.rviz" />
+
+  <!-- RViz -->
+  <node name="rviz"
+        pkg="rviz"
+        type="rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+</launch>
