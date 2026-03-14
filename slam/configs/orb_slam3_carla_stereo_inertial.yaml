@@ -54,7 +54,7 @@ Tlr: !!opencv-matrix
           0.0, 0.0, 0.0, 1.0]
 
 #--------------------------------------------------------------------------------------------
-# ORB Parameters (优化弯道性能)
+# ORB Parameters (增加特征点数量以应对低纹理场景)
 #--------------------------------------------------------------------------------------------
 ORBextractor.nFeatures: 3000
 ORBextractor.scaleFactor: 1.2
@@ -63,7 +63,7 @@ ORBextractor.iniThFAST: 8
 ORBextractor.minThFAST: 3
 
 #--------------------------------------------------------------------------------------------
-# IMU Parameters (极低权重，主要依赖视觉)
+# IMU Parameters
 #--------------------------------------------------------------------------------------------
 IMU.NoiseGyro: 0.1
 IMU.NoiseAcc: 0.1
@@ -72,7 +72,7 @@ IMU.AccWalk: 0.1
 IMU.Frequency: 200
 
 #--------------------------------------------------------------------------------------------
-# Viewer Parameters (禁用3D Viewer以节省资源)
+# Viewer Parameters
 #--------------------------------------------------------------------------------------------
 Viewer.KeyFrameSize: 0.05
 Viewer.KeyFrameLineWidth: 1
@@ -84,7 +84,3 @@ Viewer.ViewpointX: 0
 Viewer.ViewpointY: -0.7
 Viewer.ViewpointZ: -1.8
 Viewer.ViewpointF: 500
-
-# Disable viewer (set to 0 to disable)
-System.LoadAtlasFromFile: ""
-System.SaveAtlasToFile: ""

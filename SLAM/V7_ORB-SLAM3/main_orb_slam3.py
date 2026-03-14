@@ -29,14 +29,17 @@ except ImportError:
     ROS_AVAILABLE = False
     print("Warning: rospy not available, SLAM interface disabled")
 
-from carla_setup import setup_carla_scene, cleanup
+from carla_setup import setup_carla_scene, cleanup, IMU_FREQ
 from visualization import SLAMVisualizer
 from slam_interface import ORBSlam3Wrapper
 from evaluator import SLAMEvaluator
 
+# How many sim ticks between camera frames
+TICKS_PER_FRAME = 10  # 200Hz / 20Hz = 10
+
 
 class ORBSLAM3Tester:
-    """ORB-SLAM3 testing with CARLA autopilot."""
+    """ORB-SLAM3 testing with CARLA autopilot (synchronous mode)."""
 
     def __init__(self, map_name, spawn_x, spawn_y, spawn_z, spawn_yaw):
         self.scene = None
@@ -48,17 +51,18 @@ class ORBSLAM3Tester:
         # Sensor data buffers
         self.stereo_left = None
         self.stereo_right = None
-        self.latest_imu = None
         self.left_timestamp = None
         self.right_timestamp = None
+        self.new_stereo = False  # Flag: camera delivered new frame
 
-        # Setup scene
+        # Setup scene (enables synchronous mode)
         print("Setting up CARLA scene: {}".format(map_name))
         self.scene = setup_carla_scene(map_name, spawn_x, spawn_y, spawn_z, spawn_yaw)
+        self.world = self.scene['world']
 
         # Initialize visualizer
         self.visualizer = SLAMVisualizer()
-        self.visualizer.enabled = True  # Enable visualization by default
+        self.visualizer.enabled = True
 
         # Initialize ROS node FIRST
         if ROS_AVAILABLE:
@@ -77,36 +81,34 @@ class ORBSLAM3Tester:
         self.scene['camera_right'].listen(lambda img: self._on_camera_right(img))
         self.scene['imu'].listen(lambda data: self._on_imu(data))
 
-        print("Setup complete. Waiting for sensors...")
-        time.sleep(2)
+        # Tick a few times to let sensors warm up
+        print("Warming up sensors...")
+        for _ in range(20):
+            self.world.tick()
+        print("Setup complete.")
 
     def _on_camera_left(self, image):
-        """Left camera callback."""
         array = np.frombuffer(image.raw_data, dtype=np.uint8)
         array = array.reshape((image.height, image.width, 4))
         self.stereo_left = array[:, :, :3]
-        self.left_timestamp = image.timestamp  # Store timestamp
+        self.left_timestamp = image.timestamp
+        self.new_stereo = True
 
     def _on_camera_right(self, image):
-        """Right camera callback."""
         array = np.frombuffer(image.raw_data, dtype=np.uint8)
         array = array.reshape((image.height, image.width, 4))
         self.stereo_right = array[:, :, :3]
-        self.right_timestamp = image.timestamp  # Store timestamp
+        self.right_timestamp = image.timestamp
 
     def _on_imu(self, imu_data):
-        """IMU callback - publish immediately at 200Hz."""
-        self.latest_imu = imu_data
+        """IMU callback — fires every sim tick (200Hz)."""
         if self.slam and imu_data is not None:
-            # Use IMU's own timestamp (more reliable than world snapshot)
-            timestamp = imu_data.timestamp
-            self.slam.publish_imu_only(imu_data, timestamp)
+            self.slam.publish_imu_only(imu_data, imu_data.timestamp)
 
     def toggle_recording(self):
-        """Toggle evaluation recording."""
         if not self.recording:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = f"experiments/run_{timestamp}"
+            output_dir = "experiments/run_{}".format(timestamp)
             os.makedirs(output_dir, exist_ok=True)
             self.evaluator = SLAMEvaluator(output_dir)
             self.recording = True
@@ -118,78 +120,87 @@ class ORBSLAM3Tester:
             print("Recording stopped")
 
     def run(self):
-        """Main loop."""
+        """Main loop: tick simulation, publish data, visualize."""
         print("\nControls:")
         print("  S - Toggle visualization")
         print("  E - Toggle evaluation recording")
         print("  ESC - Quit")
-        print("\nWaiting for ORB-SLAM3 initialization...")
+        print("\nRunning (sync mode, {}Hz tick, {}Hz stereo)...".format(
+            IMU_FREQ, IMU_FREQ // TICKS_PER_FRAME))
 
         try:
             while True:
+                # Advance simulation by TICKS_PER_FRAME ticks
+                # IMU fires each tick (200Hz), camera fires once (20Hz)
+                for _ in range(TICKS_PER_FRAME):
+                    self.world.tick()
+
                 # Check keyboard
                 key = cv2.waitKey(1) & 0xFF
                 if key == 27:  # ESC
                     break
                 elif key == ord('s') or key == ord('S'):
                     self.visualizer.toggle()
-                    print("Visualization: {}".format('ON' if self.visualizer.enabled else 'OFF'))
+                    print("Visualization: {}".format(
+                        'ON' if self.visualizer.enabled else 'OFF'))
                 elif key == ord('e') or key == ord('E'):
                     self.toggle_recording()
 
-                # Get vehicle pose (ground truth)
-                vehicle_transform = self.scene['vehicle'].get_transform()
+                # Publish stereo if new frame arrived
+                if self.new_stereo and self.stereo_left is not None \
+                        and self.stereo_right is not None:
+                    self.slam.publish_stereo_only(
+                        self.stereo_left, self.stereo_right,
+                        self.left_timestamp)
+                    self.new_stereo = False
+
+                # Get poses
+                vehicle_tf = self.scene['vehicle'].get_transform()
                 gt_pose = (
-                    vehicle_transform.location.x,
-                    vehicle_transform.location.y,
-                    vehicle_transform.location.z,
-                    vehicle_transform.rotation.roll,
-                    vehicle_transform.rotation.pitch,
-                    vehicle_transform.rotation.yaw
+                    vehicle_tf.location.x,
+                    vehicle_tf.location.y,
+                    vehicle_tf.location.z,
+                    vehicle_tf.rotation.roll,
+                    vehicle_tf.rotation.pitch,
+                    vehicle_tf.rotation.yaw
                 )
-
-                # Publish stereo images to SLAM (use camera's own timestamp for sync)
-                if self.stereo_left is not None and self.stereo_right is not None and self.left_timestamp is not None:
-                    self.slam.publish_stereo_only(self.stereo_left, self.stereo_right, self.left_timestamp)
-
-                # Get ORB-SLAM3 pose
                 orb_pose = self.slam.get_pose()
 
-                # Record data
+                # Record
                 if self.recording and self.evaluator and orb_pose is not None:
                     self.evaluator.add_pose(gt_pose, orb_pose)
 
-                # Update visualization
+                # Visualize
                 ate = self.evaluator.compute_ate() if self.evaluator else None
                 self.visualizer.update(
-                    self.stereo_left if self.stereo_left is not None else np.zeros((480, 752, 3), dtype=np.uint8),
-                    self.stereo_right if self.stereo_right is not None else np.zeros((480, 752, 3), dtype=np.uint8),
+                    self.stereo_left if self.stereo_left is not None
+                    else np.zeros((480, 752, 3), dtype=np.uint8),
+                    self.stereo_right if self.stereo_right is not None
+                    else np.zeros((480, 752, 3), dtype=np.uint8),
                     ate
                 )
-
-                time.sleep(0.05)
 
         finally:
             print("\nCleaning up...")
             if self.recording and self.evaluator:
                 self.evaluator.finalize()
-            cleanup(self.scene['actors'])
+            cleanup(self.scene['actors'], self.world)
             cv2.destroyAllWindows()
 
 
 def main():
     parser = argparse.ArgumentParser(description='ORB-SLAM3 Testing with CARLA')
-    parser.add_argument('--map', default='Town05', help='CARLA map name')
-    parser.add_argument('--spawn-x', type=float, default=10, help='Spawn X coordinate')
-    parser.add_argument('--spawn-y', type=float, default=-210, help='Spawn Y coordinate')
-    parser.add_argument('--spawn-z', type=float, default=1.85, help='Spawn Z coordinate')
-    parser.add_argument('--spawn-yaw', type=float, default=180, help='Spawn yaw angle')
+    parser.add_argument('--map', default='/Game/Carla/Maps/Town05_line', help='CARLA map name')
+    parser.add_argument('--spawn-x', type=float, default=10)
+    parser.add_argument('--spawn-y', type=float, default=-210)
+    parser.add_argument('--spawn-z', type=float, default=1.85)
+    parser.add_argument('--spawn-yaw', type=float, default=180)
     args = parser.parse_args()
 
-    tester = ORBSLAM3Tester(args.map, args.spawn_x, args.spawn_y, args.spawn_z, args.spawn_yaw)
+    tester = ORBSLAM3Tester(args.map, args.spawn_x, args.spawn_y,
+                            args.spawn_z, args.spawn_yaw)
     tester.run()
 
 
 if __name__ == '__main__':
     main()
-
